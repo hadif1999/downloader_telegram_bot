@@ -32,7 +32,8 @@ def _num(n: int | None) -> str:
 
 
 def info_header(info: MediaInfo) -> str:
-    lines = [f'📹 <a href="{escape(info.url)}">{escape(info.title)}</a>']
+    icon = {"audio": "🎵", "gallery": "🖼"}.get(info.kind, "📹")
+    lines = [f'{icon} <a href="{escape(info.url)}">{escape(info.title)}</a>']
     if info.uploader:
         who = escape(info.uploader)
         if info.uploader_handle and info.uploader_url:
@@ -54,13 +55,22 @@ def info_header(info: MediaInfo) -> str:
 def format_list(info: MediaInfo, max_bytes: int) -> str:
     rows = []
     for f in info.formats:
-        ok = f.size is not None and f.size <= max_bytes
+        ok = f.size is None or f.size <= max_bytes
         rows.append(f"{'✅' if ok else '❌'} {f.label} - {human_size(f.size)}")
     return "\n".join(rows)
 
 
+def gallery_summary(info: MediaInfo) -> str:
+    photos = sum(i.type == "photo" for i in info.items)
+    videos = len(info.items) - photos
+    parts = [f"🖼 {photos} photo{'s' * (photos != 1)}"] if photos else []
+    parts += [f"🎬 {videos} video{'s' * (videos != 1)}"] if videos else []
+    return " · ".join(parts)
+
+
 def info_caption(info: MediaInfo, max_bytes: int) -> str:
-    text = f"{info_header(info)}\n\n{format_list(info, max_bytes)}\n\nFormats for download ⤵️"
+    body = gallery_summary(info) if info.kind == "gallery" else format_list(info, max_bytes)
+    text = f"{info_header(info)}\n\n{body}\n\nFormats for download ⤵️"
     return text if len(text) <= CAPTION_LIMIT else info_header(info)[:CAPTION_LIMIT]
 
 
@@ -76,13 +86,14 @@ FAILED = "⚠️ Download failed. Please try again later or pick another format.
 TOO_BIG = "❌ This format is larger than the upload limit."
 
 
-def progress_text(done: int, total: int | None, cells: int = 10) -> str:
+def progress_text(done: int, total: int | None, cells: int = 10, unit: str = "bytes") -> str:
     if not total:
         return f"📥 Downloading…\n{human_size(done)}"
     pct = max(0, min(100, int(done * 100 / total)))
     filled = pct * cells // 100
     bar = "▓" * filled + "░" * (cells - filled)
-    return f"📥 Downloading…\n{bar} {pct}%  ({human_size(done)} / {human_size(total)})"
+    amount = f"{done}/{total} files" if unit == "files" else f"{human_size(done)} / {human_size(total)}"
+    return f"📥 Downloading…\n{bar} {pct}%  ({amount})"
 
 
 def result_caption(info: MediaInfo, bot_username: str) -> str:
@@ -90,12 +101,11 @@ def result_caption(info: MediaInfo, bot_username: str) -> str:
 
 
 def welcome(platforms, bot_username: str) -> str:
-    lines = ["👋 Hello!", "", "📥 I can help you download videos and audio from:", ""]
-    for p in platforms:
-        lines.append(f"{p.emoji} {p.title}" + ("" if p.implemented else " <i>(coming soon)</i>"))
+    lines = ["👋 Hello!", "", "📥 I can help you download videos, photos and music from:", ""]
+    lines += [f"{p.emoji} {p.title}" for p in platforms]
     lines += [
         "",
-        "• To download, just send me a link to the video.",
+        "• To download, just send me a link to the video, photo or track.",
         "",
         "<i>(I also work in groups. To add me to a group, press the button below 👇)</i>",
     ]

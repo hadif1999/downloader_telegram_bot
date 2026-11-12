@@ -19,6 +19,12 @@ class AudioTrack:
 
 
 @dataclass
+class GalleryItem:
+    url: str
+    type: str = "photo"  # "photo" | "video"
+
+
+@dataclass
 class MediaInfo:
     platform: str
     id: str
@@ -38,6 +44,10 @@ class MediaInfo:
     description: str = ""
     formats: list[FormatOption] = field(default_factory=list)
     audio_tracks: list[AudioTrack] = field(default_factory=list)
+    # "video" (resolution menu), "audio" (mp3 only) or "gallery" (photos/videos sent as an album)
+    kind: str = "video"
+    items: list[GalleryItem] = field(default_factory=list)  # gallery entries
+    extra: dict = field(default_factory=dict)  # platform-specific data (e.g. direct media url)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -47,6 +57,7 @@ class MediaInfo:
         d = dict(d)
         d["formats"] = [FormatOption(**f) for f in d.get("formats", [])]
         d["audio_tracks"] = [AudioTrack(**a) for a in d.get("audio_tracks", [])]
+        d["items"] = [GalleryItem(**i) for i in d.get("items", [])]
         return cls(**d)
 
     def format(self, key: str) -> FormatOption | None:
@@ -55,7 +66,9 @@ class MediaInfo:
 
 @dataclass
 class DownloadResult:
-    path: str
+    path: str = ""
+    # gallery downloads: (local path, "photo" | "video") in post order
+    files: list[tuple[str, str]] = field(default_factory=list)
     width: int | None = None
     height: int | None = None
     duration: int | None = None

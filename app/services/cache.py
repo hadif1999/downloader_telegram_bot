@@ -1,4 +1,4 @@
-"""Redis-backed state: media info cache, Telegram file_id cache, per-user locks."""
+"""Redis-backed state: media info cache, source urls, Telegram file_id cache, per-user locks."""
 
 from __future__ import annotations
 
@@ -10,14 +10,12 @@ import redis
 from app.config import get_settings
 from app.models import MediaInfo
 
+SRC_TTL = 30 * 24 * 3600
+
 
 @lru_cache
 def client() -> redis.Redis:
     return redis.Redis.from_url(get_settings().redis_url, decode_responses=True)
-
-
-def _info_key(platform: str, media_id: str) -> str:
-    return f"info:{platform}:{media_id}"
 
 
 def _fid_key(platform: str, media_id: str, fmt: str, lang: str | None) -> str:
@@ -25,19 +23,24 @@ def _fid_key(platform: str, media_id: str, fmt: str, lang: str | None) -> str:
 
 
 def save_info(info: MediaInfo) -> None:
-    client().set(
-        _info_key(info.platform, info.id),
-        json.dumps(info.to_dict()),
-        ex=get_settings().info_cache_ttl,
-    )
+    pipe = client().pipeline()
+    pipe.set(f"info:{info.platform}:{info.id}", json.dumps(info.to_dict()), ex=get_settings().info_cache_ttl)
+    # source url outlives the info cache so old buttons can re-extract
+    pipe.set(f"src:{info.platform}:{info.id}", info.url, ex=SRC_TTL)
+    pipe.execute()
 
 
 def load_info(platform: str, media_id: str) -> MediaInfo | None:
-    raw = client().get(_info_key(platform, media_id))
+    raw = client().get(f"info:{platform}:{media_id}")
     return MediaInfo.from_dict(json.loads(raw)) if raw else None
 
 
+def load_src(platform: str, media_id: str) -> str | None:
+    return client().get(f"src:{platform}:{media_id}")
+
+
 def save_file_id(platform: str, media_id: str, fmt: str, lang: str | None, file_id: str) -> None:
+    """file_id is a Telegram file_id, or a JSON list of [type, file_id] for galleries."""
     client().set(_fid_key(platform, media_id, fmt, lang), file_id)
 
 

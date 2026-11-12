@@ -30,20 +30,25 @@ def _rows(buttons: list[Btn], per_row: int) -> list[list[Btn]]:
 
 
 def formats_kb(info: MediaInfo, max_bytes: int) -> InlineKeyboardMarkup:
-    video = [
-        Btn(text=f"📹 {f.label}", callback_data=cb("fmt", info, fmt=f.key))
-        for f in info.formats
-        if f.key != "mp3" and f.size is not None and f.size <= max_bytes
-    ]
-    rows = _rows(video, 3)
-    if info.format("mp3"):
-        rows.append([Btn(text="🔉 MP3", callback_data=cb("fmt", info, fmt="mp3"))])
-    rows.append(
-        [
-            Btn(text="🖼", callback_data=cb("thumb", info)),
-            Btn(text="📝", callback_data=cb("desc", info)),
+    rows: list[list[Btn]] = []
+    if info.kind == "gallery":
+        rows.append([Btn(text=f"📥 Download ({len(info.items)})", callback_data=cb("fmt", info, fmt="all"))])
+    else:
+        video = [
+            Btn(text=f"📹 {f.label}", callback_data=cb("fmt", info, fmt=f.key))
+            for f in info.formats
+            if f.key != "mp3" and (f.size is None or f.size <= max_bytes)
         ]
-    )
+        rows += _rows(video, 3)
+        if info.format("mp3"):
+            rows.append([Btn(text="🔉 MP3", callback_data=cb("fmt", info, fmt="mp3"))])
+    extras = []
+    if info.thumbnail:
+        extras.append(Btn(text="🖼", callback_data=cb("thumb", info)))
+    if info.description:
+        extras.append(Btn(text="📝", callback_data=cb("desc", info)))
+    if extras:
+        rows.append(extras)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

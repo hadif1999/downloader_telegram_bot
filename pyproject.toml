@@ -11,6 +11,8 @@ dependencies = [
     "yt-dlp[default]>=2025.11.12",
     "bgutil-ytdlp-pot-provider>=1.2",
     "pydantic-settings>=2.4",
+    "gallery-dl>=1.30",
+    "mutagen>=1.47",
 ]
 
 [dependency-groups]

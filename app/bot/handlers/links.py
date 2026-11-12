@@ -11,7 +11,9 @@ from aiogram.types import Message
 from app.config import get_settings
 from app.models import MediaInfo
 from app.platforms import registry
-from app.services import cache, captions
+from app.platforms.ytdlp import UserError
+from app.services import captions, media
+from app.services.jobs import request_download
 from app.services.keyboards import formats_kb
 
 log = logging.getLogger(__name__)
@@ -19,15 +21,6 @@ router = Router(name="links")
 
 # limit concurrent metadata extractions inside the bot process
 _extract_sem = asyncio.Semaphore(4)
-
-
-async def get_info(platform, media_id: str, url: str) -> MediaInfo:
-    info = cache.load_info(platform.name, media_id)
-    if info is None:
-        async with _extract_sem:
-            info = await asyncio.to_thread(platform.extract, url)
-        cache.save_info(info)
-    return info
 
 
 async def send_info_card(message: Message, info: MediaInfo) -> None:
@@ -46,20 +39,34 @@ async def send_info_card(message: Message, info: MediaInfo) -> None:
 @router.message(F.text | F.caption)
 async def on_link(message: Message) -> None:
     found = registry.detect(message.text or message.caption or "")
-    private = message.chat.type == ChatType.PRIVATE
     if not found:
-        if private:
-            await message.reply("🔗 Send me a link to a video, e.g. a YouTube link.")
+        if message.chat.type == ChatType.PRIVATE:
+            await message.reply("🔗 Send me a link to a video, photo or track.")
         return
     platform, media_id, url = found
-    if not platform.implemented:
-        await message.reply(f"{platform.emoji} {platform.title} support is coming soon.")
-        return
-    await message.bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
+    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     try:
-        info = await get_info(platform, media_id, url)
+        async with _extract_sem:
+            info = await asyncio.to_thread(media.resolve, platform.name, media_id, url)
+    except UserError as e:
+        await message.reply(f"⚠️ {e}")
+        return
     except Exception:
         log.exception("extract failed: %s", url)
-        await message.reply("⚠️ Couldn't get information about this link. Is the video public?")
+        await message.reply(f"⚠️ Couldn't get this {platform.title} post. Is it public?")
+        return
+
+    if fmt := media.single_choice(info):  # nothing to choose: start right away
+        error = await request_download(
+            message.bot,
+            info,
+            fmt,
+            None,
+            chat_id=message.chat.id,
+            user_id=message.from_user.id,
+            reply_to=message.message_id,
+        )
+        if error:
+            await message.reply(error)
         return
     await send_info_card(message, info)

@@ -1,7 +1,7 @@
 # Media Downloader Bot
 
-A Telegram bot that downloads videos and audio from links. **YouTube** works now; Instagram, TikTok,
-Pinterest, Snapchat, Likee, VK, Facebook, Threads and Music are planned (see [docs/TODO.md](docs/TODO.md)).
+A Telegram bot that downloads videos, photos and music from links: **YouTube, Instagram, TikTok,
+Pinterest, Snapchat, Likee, VK, Facebook, Threads, SoundCloud and Spotify**.
 
 UX reference: [docs/screenshots](docs/screenshots).
 
@@ -13,6 +13,28 @@ UX reference: [docs/screenshots](docs/screenshots).
 4. The card turns into "queued", then a live `▓▓▓░░░ 40%` progress bar.
 5. The video arrives with a "🎵 Download music from video" button. Each finished file's `file_id`
    is cached, so a repeat request is sent instantly.
+
+When there is nothing to choose (one quality, a photo post, a track), the download starts right away
+without the card. Photo posts and carousels arrive as Telegram albums.
+
+## Platforms
+
+| Platform | How | Notes |
+|----------|-----|-------|
+| YouTube | yt-dlp + bgutil PO-token provider | resolutions, dubbed audio tracks, MP3 |
+| Instagram | yt-dlp (reels/videos), gallery-dl (photos, carousels) | most content needs `cookies/instagram.txt` |
+| TikTok | yt-dlp (videos), gallery-dl (photo slideshows) | |
+| Pinterest | yt-dlp (video pins), gallery-dl / OpenGraph (image pins) | `pin.it` short links work |
+| Snapchat | OpenGraph `og:video` of Spotlight pages | yt-dlp's extractor is currently broken, so it's skipped |
+| Likee | yt-dlp, OpenGraph fallback | untested: likee.video redirects to /notfound from our test region |
+| VK | yt-dlp (videos/clips), gallery-dl (wall photos) | |
+| Facebook | yt-dlp (videos/reels), gallery-dl (photos), OpenGraph | many posts need `cookies/facebook.txt` |
+| Threads | page's embedded post JSON (no library supports it) | videos, photos, carousels of public posts |
+| SoundCloud | yt-dlp | sent as MP3 with tags and artwork |
+| Spotify | track metadata from the page, audio matched on YouTube by duration | DRM: Spotify audio itself can't be downloaded. Single tracks only |
+
+Every platform lives in `app/platforms/`: generic yt-dlp sites are a few lines in `sites.py`
+(`YtDlpPlatform` with optional `gallery` / `opengraph` fallbacks); Threads and Spotify are custom.
 
 ## Architecture
 
@@ -27,7 +49,7 @@ Telegram ⇄ telegram-bot-api (local server, 2 GB uploads)
 |------|------|
 | `app/bot/` | aiogram dispatcher and handlers (`start`, `links`, `callbacks`) |
 | `app/worker/` | Celery app and the `download_media` task (progress, upload, caching) |
-| `app/platforms/` | `Platform` protocol, registry, `youtube.py` (yt-dlp), stubs for the others |
+| `app/platforms/` | `Platform` protocol, registry, generic `ytdlp.py`, `gallery.py`, site modules |
 | `app/services/` | captions/texts, keyboards, Redis cache and locks, Telegram helpers |
 
 **Parallelism:** `MAX_PARALLEL_DOWNLOADS` sets the Celery worker concurrency. Extra jobs wait in Redis.
@@ -44,9 +66,11 @@ Each user can have one active download at a time. To scale out, run more worker 
    `curl https://api.telegram.org/bot<BOT_TOKEN>/logOut`
 5. `docker compose up -d --build`, then `docker compose logs -f bot worker`.
 
-If YouTube starts asking you to "sign in to confirm you're not a bot", export cookies from a browser
-(Netscape format), save them as `cookies/youtube.txt`, and set `YTDLP_COOKIES=/cookies/youtube.txt`.
-Use a throwaway account.
+**Cookies.** Many sites (Instagram, Facebook, sometimes YouTube with "sign in to confirm you're not a
+bot") only serve logged-in users. Export cookies from a browser in Netscape format (e.g. the
+"Get cookies.txt LOCALLY" extension) and save them as `cookies/<site>.txt`, e.g. `cookies/instagram.txt`,
+`cookies/facebook.txt`, `cookies/youtube.txt`. They are used automatically by both yt-dlp and gallery-dl.
+Use throwaway accounts.
 
 ### Without the local Bot API server
 Set `BOT_API_URL=` (empty), `BOT_API_LOCAL=false`, `MAX_FILE_MB=50`. Files are then uploaded over HTTP
@@ -63,4 +87,5 @@ uv run python -m app.bot.main
 uv run celery -A app.worker.celery_app worker --concurrency=2 -l INFO
 ```
 
-Keep yt-dlp up to date (`uv lock --upgrade-package yt-dlp`). YouTube changes often.
+Keep the extractors up to date: `uv lock --upgrade-package yt-dlp --upgrade-package gallery-dl`.
+Sites change often.

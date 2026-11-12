@@ -65,8 +65,10 @@ def test_progress_text():
     assert "▓░░░░░░░░░ 10%" in captions.progress_text(10, 100)
     assert "100%" in captions.progress_text(150, 100)
     assert "Downloading" in captions.progress_text(5, None)
+    assert "(2/4 files)" in captions.progress_text(2, 4, unit="files")
 
 
 def test_welcome_lists_platforms():
     text = captions.welcome(PLATFORMS, "bot")
-    assert "YouTube" in text and "Instagram <i>(coming soon)</i>" in text
+    assert all(name in text for name in ("YouTube", "Instagram", "Threads", "SoundCloud", "Spotify"))
+    assert "coming soon" not in text

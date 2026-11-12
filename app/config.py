@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     task_time_limit: int = 60 * 60
     download_dir: Path = Path("/downloads")
 
-    ytdlp_cookies: Path | None = None
+    # Netscape cookie files named <platform>.txt (youtube.txt, instagram.txt, facebook.txt, ...)
+    cookies_dir: Path = Path("/cookies")
     # bgutil PO-token provider sidecar (empty disables)
     pot_provider_url: str = "http://bgutil-provider:4416"
 

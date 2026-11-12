@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 
 from app.platforms import registry
-from app.platforms.youtube import YouTube, format_selector, to_media_info
+from app.platforms.youtube import YouTube, to_media_info
+from app.platforms.ytdlp import format_selector
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "yt_multiaudio.json").read_text())
 
@@ -29,7 +30,7 @@ def test_detect_in_text_and_stubs():
     p, media_id, _ = registry.detect("check this out https://youtu.be/0MNVhXEX9to !!")
     assert (p.name, media_id) == ("yt", "0MNVhXEX9to")
     p, _, _ = registry.detect("https://www.instagram.com/reel/abc123/")
-    assert p.name == "ig" and not p.implemented
+    assert p.name == "ig"
     assert registry.detect("hello there") is None
 
 
@@ -60,7 +61,7 @@ def test_single_audio_has_no_tracks():
 def test_format_selector():
     assert format_selector(1080, None).startswith("bv*[height<=1080][ext=mp4]+ba[ext=m4a]/")
     assert "[language=de-DE]" in format_selector(720, "de-DE")
-    assert format_selector(None, None).startswith("ba[ext=m4a]")
+    assert format_selector(None, None, audio=True).startswith("ba[ext=m4a]")
 
 
 def test_best_thumbnail_skips_missing():
