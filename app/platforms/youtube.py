@@ -173,6 +173,7 @@ class YouTube:
         opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
+            "noprogress": True,
             "noplaylist": True,
             "retries": 10,
             "fragment_retries": 10,
