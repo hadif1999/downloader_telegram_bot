@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
 from aiogram.types import FSInputFile, InputFile, Message, ReplyParameters
 
 from app.config import get_settings
@@ -46,5 +48,7 @@ async def edit_status(bot: Bot, chat_id: int, msg_id: int, text: str, is_caption
             await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=text)
         else:
             await bot.edit_message_text(text, chat_id=chat_id, message_id=msg_id)
-    except TelegramBadRequest:
-        pass  # "message is not modified" / deleted by user
+    except (TelegramAPIError, TelegramNetworkError) as e:
+        # "message is not modified", deleted message, flood limits, network blips:
+        # a failed status edit must never abort the download itself
+        logging.getLogger(__name__).debug("status edit failed: %s", e)

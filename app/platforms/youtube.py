@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -87,12 +88,24 @@ def build_audio_tracks(info: dict) -> list[AudioTrack]:
     ]
 
 
-def best_thumbnail(info: dict) -> str | None:
-    """Highest-preference JPEG thumbnail (Telegram can't always fetch webp by URL)."""
-    thumbs = [t for t in info.get("thumbnails") or [] if t.get("url")]
-    jpgs = [t for t in thumbs if ".jpg" in t["url"]]
-    best = max(jpgs or thumbs, key=lambda t: (t.get("preference") or 0, t.get("width") or 0), default=None)
-    return best["url"] if best else info.get("thumbnail")
+def _url_ok(url: str) -> bool:
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def best_thumbnail(info: dict, check=_url_ok) -> str | None:
+    """Best JPEG thumbnail that actually exists (yt-dlp lists unverified ones; maxres often 404s,
+    and Telegram can't always fetch webp by URL). hqdefault.jpg always exists."""
+    thumbs = [t for t in info.get("thumbnails") or [] if ".jpg" in (t.get("url") or "")]
+    thumbs.sort(key=lambda t: (t.get("preference") or 0, t.get("width") or 0), reverse=True)
+    for t in thumbs[:3]:
+        if check(t["url"]):
+            return t["url"]
+    return f"https://i.ytimg.com/vi/{info['id']}/hqdefault.jpg"
 
 
 def _date(d: str | None) -> str | None:

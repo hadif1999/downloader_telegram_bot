@@ -7,3 +7,5 @@ downloads/
 .ruff_cache/
 graphify-out/
 *.egg-info/
+cookies/*
+!cookies/.gitkeep

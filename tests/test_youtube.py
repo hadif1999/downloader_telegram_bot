@@ -41,7 +41,7 @@ def test_media_info_matches_reference():
     assert info.category == "Science & Technology"
     keys = [f.key for f in info.formats]
     assert keys[-1] == "mp3"
-    assert ["1080", "720", "480", "360", "240", "144"] == [k for k in keys if k.isdigit()][-6:]
+    assert [k for k in keys if k.isdigit()][-6:] == ["1080", "720", "480", "360", "240", "144"]
     mib = {f.key: round(f.size / 2**20, 1) for f in info.formats}
     assert mib["1080"] == 125.6 and mib["mp3"] == 24.1  # same numbers as the reference screenshot
 
@@ -61,3 +61,18 @@ def test_format_selector():
     assert format_selector(1080, None).startswith("bv*[height<=1080][ext=mp4]+ba[ext=m4a]/")
     assert "[language=de-DE]" in format_selector(720, "de-DE")
     assert format_selector(None, None).startswith("ba[ext=m4a]")
+
+
+def test_best_thumbnail_skips_missing():
+    from app.platforms.youtube import best_thumbnail
+
+    info = {
+        "id": "abc",
+        "thumbnails": [
+            {"url": "https://i.ytimg.com/vi/abc/maxresdefault.jpg", "preference": 0, "width": 1280},
+            {"url": "https://i.ytimg.com/vi_webp/abc/maxresdefault.webp", "preference": 1},
+            {"url": "https://i.ytimg.com/vi/abc/sddefault.jpg", "preference": -1, "width": 640},
+        ],
+    }
+    assert best_thumbnail(info, check=lambda u: "/sddefault" in u).endswith("sddefault.jpg")
+    assert best_thumbnail(info, check=lambda u: False).endswith("abc/hqdefault.jpg")

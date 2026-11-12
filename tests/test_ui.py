@@ -43,7 +43,13 @@ def test_formats_keyboard_layout():
 def test_languages_keyboard():
     rows = languages_kb(INFO, "1080").inline_keyboard
     flat = [b for row in rows for b in row]
-    assert flat[0].text == "🎬 Original" and parse_cb(flat[0].callback_data) == ("dl", "yt", INFO.id, "1080", "")
+    assert flat[0].text == "🎬 Original" and parse_cb(flat[0].callback_data) == (
+        "dl",
+        "yt",
+        INFO.id,
+        "1080",
+        "",
+    )
     de = next(b for b in flat if b.text == "DE-DE")
     assert parse_cb(de.callback_data)[4] == "de-DE"
     assert flat[-1].text == "◀️"

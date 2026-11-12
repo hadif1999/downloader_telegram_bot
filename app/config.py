@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     max_parallel_downloads: int = 2
     max_file_mb: int = 2000
     task_time_limit: int = 60 * 60
-    download_dir: Path = Path("/var/lib/telegram-bot-api/downloads")
+    download_dir: Path = Path("/downloads")
 
     ytdlp_cookies: Path | None = None
     # bgutil PO-token provider sidecar (empty disables)
