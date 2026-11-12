@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+downloads/
+.pytest_cache/
+.ruff_cache/
+graphify-out/
+*.egg-info/
