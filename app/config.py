@@ -8,6 +8,18 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     bot_token: str = ""
+
+    youtube_enabled: bool = True
+    instagram_enabled: bool = True
+    tiktok_enabled: bool = True
+    pinterest_enabled: bool = True
+    snapchat_enabled: bool = True
+    likee_enabled: bool = True
+    vk_enabled: bool = True
+    facebook_enabled: bool = True
+    threads_enabled: bool = True
+    soundcloud_enabled: bool = True
+    spotify_enabled: bool = True
     # Local Telegram Bot API server (allows uploads up to 2 GB). Empty = official cloud API.
     bot_api_url: str = "http://telegram-bot-api:8081"
     bot_api_local: bool = True

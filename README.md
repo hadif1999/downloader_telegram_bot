@@ -78,6 +78,31 @@ and anything over 50 MB is shown as ❌.
 
 ## Development
 
+### Enable or disable platforms
+
+All platforms are enabled by default. Set any of these flags to `false` in `.env` to disable it:
+
+```dotenv
+YOUTUBE_ENABLED=true
+INSTAGRAM_ENABLED=true
+TIKTOK_ENABLED=true
+PINTEREST_ENABLED=true
+SNAPCHAT_ENABLED=true
+LIKEE_ENABLED=true
+VK_ENABLED=true
+FACEBOOK_ENABLED=true
+THREADS_ENABLED=true
+SOUNDCLOUD_ENABLED=true
+SPOTIFY_ENABLED=true
+```
+
+Disabled platforms are hidden from `/start` and `/help`, their links are ignored, and old download
+buttons stop working. Apply changes to both bot and worker with
+`docker compose up -d --force-recreate bot worker` (or restart both processes when running locally).
+Disabling YouTube links does not disable Spotify's internal YouTube audio matching.
+
+### Local development
+
 ```bash
 uv sync
 uv run pytest

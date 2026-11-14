@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from app.config import get_settings
 from app.platforms.base import Platform
 from app.platforms.sites import VK, Facebook, Instagram, Likee, Pinterest, Snapchat, SoundCloud, TikTok
 from app.platforms.spotify import Spotify
@@ -21,6 +22,7 @@ PLATFORMS: list[Platform] = [
     SoundCloud(),
     Spotify(),
 ]
+PLATFORMS = [p for p in PLATFORMS if getattr(get_settings(), f"{p.title.lower()}_enabled")]
 _BY_NAME = {p.name: p for p in PLATFORMS}
 
 URL_RE = re.compile(r"https?://\S+|(?:www\.)?[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}/\S+", re.I)

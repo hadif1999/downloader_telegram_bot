@@ -9,9 +9,9 @@ from app.services import cache
 
 def resolve(platform_name: str, media_id: str, url: str | None = None) -> MediaInfo | None:
     """Blocking (runs yt-dlp etc.): call through asyncio.to_thread from async code."""
+    platform = registry.get(platform_name)
     if info := cache.load_info(platform_name, media_id):
         return info
-    platform = registry.get(platform_name)
     url = url or cache.load_src(platform_name, media_id) or platform.url_for(media_id)
     if not url:
         return None

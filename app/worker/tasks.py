@@ -66,11 +66,11 @@ def download_media(
 
 async def _run(chat_id, msg_id, is_caption, platform_name, media_id, fmt, lang, reply_to) -> None:
     s = get_settings()
-    platform = registry.get(platform_name)
     bot = make_bot()
     dest = s.download_dir / uuid.uuid4().hex
     info = None
     try:
+        platform = registry.get(platform_name)
         info = await asyncio.to_thread(media.resolve, platform_name, media_id)
         if info is None:
             raise UserError(captions.EXPIRED)
