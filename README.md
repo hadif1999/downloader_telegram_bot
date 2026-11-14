@@ -104,6 +104,28 @@ Disabling YouTube links does not disable Spotify's internal YouTube audio matchi
 
 ### Local development
 
+Install Docker with Compose, ffmpeg, and Deno on your host. Configure `.env` as described in Setup
+(including `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` and the one-time cloud Bot API logout), and enable
+at least one platform, for example `YOUTUBE_ENABLED=true`. Then run:
+
+```bash
+uv run main.py
+```
+
+This starts Redis, the local Telegram Bot API, and the PO-token provider in Docker and runs both
+the bot and Celery worker locally with interleaved logs. Default Docker service addresses become
+localhost addresses automatically; default downloads/cookies paths become project directories.
+Host files upload over HTTP to the local Bot API, so no host download-volume mapping is needed.
+Explicit custom service URLs and directory paths are preserved. The launcher leaves `.env` unchanged.
+Ports 6379, 8081, and 4416 must be available; they bind only to localhost.
+
+Do not run the Compose `bot` / `worker` containers at the same time as the local processes:
+`docker compose stop bot worker`. Ctrl+C stops the local bot and worker; active downloads have
+20 seconds to stop before being killed. The infrastructure containers remain running for reuse.
+Stop those with `docker compose -f docker-compose.yml -f docker-compose.local.yml stop redis telegram-bot-api bgutil-provider`.
+
+For separate processes or development checks:
+
 ```bash
 uv sync
 uv run pytest
