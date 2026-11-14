@@ -79,6 +79,16 @@ def status_caption(info: MediaInfo, status: str) -> str:
 
 
 QUEUED = "🕐 The selected format has been added to the download queue. Please wait…"
+EXTRACT_WAITING = "🔗 Link received. Waiting to fetch media details…"
+
+
+def extracting_caption(platform: str, elapsed: int = 0) -> str:
+    text = f"🔎 Checking your {escape(platform)} link…\nFetching media details and available formats."
+    if elapsed:
+        text += f"\n⏱ {elapsed}s elapsed. Some sites take longer to respond."
+    return text
+
+
 UPLOADING = "📤 Uploading to Telegram…"
 BUSY = "⏳ You already have a download in progress. Please wait until it finishes."
 EXPIRED = "⌛ This request has expired, please send the link again."

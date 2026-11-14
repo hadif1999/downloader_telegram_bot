@@ -6,7 +6,8 @@ Pinterest, Snapchat, Likee, VK, Facebook, Threads, SoundCloud and Spotify**.
 UX reference: [docs/screenshots](docs/screenshots).
 
 1. `/start`: welcome text and an "Add to a group" button.
-2. Send a link: the bot replies with the thumbnail and an info card (channel, subscribers, duration,
+2. Send a link: the bot immediately acknowledges it, then shows metadata lookup status with elapsed
+   time every five seconds while the site responds. That message becomes the thumbnail and an info card (channel, subscribers, duration,
    views/likes/comments, category, date, size per format) and buttons for each resolution,
    MP3, 🖼 thumbnail and 📝 description.
 3. Videos with dubbed audio show a language picker (Original / DE-DE / ES-US / …).

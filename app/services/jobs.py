@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 from aiogram import Bot
@@ -32,6 +33,9 @@ async def request_download(
     if cached := cache.get_file_id(info.platform, info.id, fmt, lang):
         caption = captions.result_caption(info, me.username)
         await send_cached(bot, chat_id, fmt, cached, caption, info.platform, info.id, info.kind, reply_to)
+        if card is not None:
+            with contextlib.suppress(Exception):
+                await card.delete()
         return None
 
     fo = info.format(fmt)
@@ -44,7 +48,8 @@ async def request_download(
         from app.worker.tasks import download_media
 
         if card is not None:
-            await card.edit_reply_markup(reply_markup=None)
+            if card.reply_markup is not None:
+                await card.edit_reply_markup(reply_markup=None)
             text = captions.status_caption(info, captions.QUEUED)
             if card.photo:
                 await card.edit_caption(caption=text)
