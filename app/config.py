@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     bot_token: str = ""
+    telegram_api_id: str = ""
+    telegram_api_hash: str = ""
 
     youtube_enabled: bool = False
     instagram_enabled: bool = False

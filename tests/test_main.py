@@ -1,6 +1,7 @@
 import signal
 import subprocess
 from unittest.mock import MagicMock
+from urllib.error import HTTPError
 
 import pytest
 
@@ -9,13 +10,30 @@ from app.config import Settings
 
 
 def test_default_local_environment():
-    env = launcher.local_env(Settings(_env_file=None))
+    env = launcher.local_env(Settings(_env_file=None, telegram_api_id="123", telegram_api_hash="test"))
     assert env["REDIS_URL"] == "redis://127.0.0.1:6379/0"
     assert env["BOT_API_URL"] == "http://127.0.0.1:8081"
     assert env["POT_PROVIDER_URL"] == "http://127.0.0.1:4416"
     assert env["BOT_API_LOCAL"] == "false"
     assert env["DOWNLOAD_DIR"] == str(launcher.ROOT / "downloads")
     assert env["COOKIES_DIR"] == str(launcher.ROOT / "cookies")
+    assert env["MAX_FILE_MB"] == "2000"
+
+
+def test_missing_local_api_credentials_uses_cloud():
+    env = launcher.local_env(Settings(_env_file=None, telegram_api_id="", telegram_api_hash=""))
+    assert env["BOT_API_URL"] == ""
+    assert env["MAX_FILE_MB"] == "50"
+
+
+def test_deno_install_directory_is_added_to_child_path(monkeypatch, tmp_path):
+    deno_dir = tmp_path / ".deno" / "bin"
+    deno_dir.mkdir(parents=True)
+    (deno_dir / "deno").touch()
+    monkeypatch.setattr(launcher.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(launcher.shutil, "which", lambda _: None)
+    env = launcher.local_env(Settings(_env_file=None))
+    assert env["PATH"].split(launcher.os.pathsep)[0] == str(deno_dir)
 
 
 def test_custom_local_environment(tmp_path):
@@ -52,12 +70,34 @@ def test_service_timeout(monkeypatch):
         )
 
 
+def test_http_readiness_requires_http_response(monkeypatch):
+    request = MagicMock(
+        side_effect=[ConnectionResetError(), HTTPError("http://localhost", 404, "", {}, None)]
+    )
+    monkeypatch.setattr(launcher, "urlopen", request)
+    monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
+    launcher.wait_for_services(
+        {"REDIS_URL": "", "BOT_API_URL": "http://localhost:8081", "POT_PROVIDER_URL": ""}
+    )
+    assert request.call_count == 2
+
+
+def test_http_server_errors_are_not_ready(monkeypatch):
+    request = MagicMock(side_effect=HTTPError("http://localhost", 503, "", {}, None))
+    monkeypatch.setattr(launcher, "urlopen", request)
+    monkeypatch.setattr(launcher.time, "monotonic", MagicMock(side_effect=[0, 61]))
+    with pytest.raises(RuntimeError, match="BOT_API_URL"):
+        launcher.wait_for_services(
+            {"REDIS_URL": "", "BOT_API_URL": "http://localhost:8081", "POT_PROVIDER_URL": ""}
+        )
+
+
 @pytest.fixture
 def local_startup(monkeypatch, tmp_path):
     monkeypatch.setattr(launcher, "ROOT", tmp_path)
     monkeypatch.setattr(launcher.os, "chdir", lambda _: None)
     monkeypatch.setattr(launcher, "Settings", lambda: Settings(_env_file=None, bot_token="test-token"))
-    monkeypatch.setattr(launcher.shutil, "which", lambda name: name)
+    monkeypatch.setattr(launcher.shutil, "which", lambda name, **kwargs: name)
     compose = MagicMock()
     monkeypatch.setattr(launcher.subprocess, "run", compose)
     monkeypatch.setattr(launcher, "wait_for_services", lambda _: None)
@@ -79,6 +119,7 @@ def test_starts_both_processes_and_stops_peer_on_exit(monkeypatch, local_startup
     assert popen.call_args_list[1].args[0][1:] == ["-m", "app.bot.main"]
     assert popen.call_args.kwargs["env"]["BOT_API_LOCAL"] == "false"
     assert compose.call_args.kwargs["check"] is True
+    assert "telegram-bot-api" not in compose.call_args.args[0]
     kill.assert_called_once_with(101, signal.SIGTERM)
 
 

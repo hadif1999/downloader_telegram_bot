@@ -9,7 +9,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
+from urllib.request import urlopen
 
 from app.config import Settings
 
@@ -29,6 +31,13 @@ def local_env(settings: Settings) -> dict[str, str]:
         env[key] = value
     # Host files are uploaded over HTTP; Docker's /downloads volume is not shared with the host.
     env["BOT_API_LOCAL"] = "false"
+    managed_bot_api = env["BOT_API_URL"] == "http://127.0.0.1:8081"
+    if managed_bot_api and not (settings.telegram_api_id and settings.telegram_api_hash):
+        env["BOT_API_URL"] = ""
+    env["MAX_FILE_MB"] = str(settings.max_file_mb if env["BOT_API_URL"] else min(settings.max_file_mb, 50))
+    deno_dir = Path.home() / ".deno" / "bin"
+    if not shutil.which("deno") and (deno_dir / "deno").is_file():
+        env["PATH"] = str(deno_dir) + os.pathsep + env.get("PATH", "")
     for key, value, container_path, local_path in (
         ("DOWNLOAD_DIR", settings.download_dir, "/downloads", "downloads"),
         ("COOKIES_DIR", settings.cookies_dir, "/cookies", "cookies"),
@@ -46,8 +55,18 @@ def wait_for_services(env: dict[str, str]) -> None:
         port = url.port or {"redis": 6379, "rediss": 6379, "http": 80, "https": 443}[url.scheme]
         while True:
             try:
-                with socket.create_connection((url.hostname, port), timeout=1):
-                    break
+                if url.scheme in ("http", "https"):
+                    try:
+                        with urlopen(env[key], timeout=1):
+                            pass
+                    except HTTPError as error:
+                        # The API root normally returns 404; a TCP accept alone can be Docker's proxy.
+                        if error.code >= 500:
+                            raise OSError("Service is not ready") from None
+                else:
+                    with socket.create_connection((url.hostname, port), timeout=1):
+                        pass
+                break
             except OSError:
                 if time.monotonic() >= deadline:
                     raise RuntimeError(f"{key} service did not become reachable within 60 seconds") from None
@@ -59,10 +78,19 @@ def main() -> int:
     settings = Settings()
     if not settings.bot_token or settings.bot_token == "123456:ABC-your-token-from-BotFather":
         raise RuntimeError("Set BOT_TOKEN in .env before running the bot.")
-    for command in ("docker", "ffmpeg", "deno"):
-        if not shutil.which(command):
-            raise RuntimeError(f"Install {command} before running locally (see README.md).")
     env = local_env(settings)
+    for command in ("docker", "ffmpeg", "deno"):
+        if not shutil.which(command, path=env.get("PATH")):
+            raise RuntimeError(f"Install {command} before running locally (see README.md).")
+    services = ["redis", "bgutil-provider"]
+    if env["BOT_API_URL"] == "http://127.0.0.1:8081":
+        services.append("telegram-bot-api")
+    if not env["BOT_API_URL"]:
+        print(
+            "Using Telegram cloud Bot API (50 MB maximum). Set TELEGRAM_API_ID and "
+            "TELEGRAM_API_HASH for the local Bot API.",
+            flush=True,
+        )
     subprocess.run(
         [
             "docker",
@@ -73,9 +101,7 @@ def main() -> int:
             "docker-compose.local.yml",
             "up",
             "-d",
-            "redis",
-            "telegram-bot-api",
-            "bgutil-provider",
+            *services,
         ],
         check=True,
     )

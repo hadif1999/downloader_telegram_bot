@@ -12,8 +12,11 @@ async def main() -> None:
     bot = make_bot()
     dp = Dispatcher()
     dp.include_routers(start.router, callbacks.router, links.router)
-    await bot.delete_webhook(drop_pending_updates=False)
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    try:
+        await bot.delete_webhook(drop_pending_updates=False, request_timeout=15)
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types(), close_bot_session=False)
+    finally:
+        await bot.session.close()
 
 
 if __name__ == "__main__":

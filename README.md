@@ -104,20 +104,24 @@ Disabling YouTube links does not disable Spotify's internal YouTube audio matchi
 
 ### Local development
 
-Install Docker with Compose, ffmpeg, and Deno on your host. Configure `.env` as described in Setup
-(including `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` and the one-time cloud Bot API logout), and enable
+Install Docker with Compose, ffmpeg, and Deno on your host. Set `BOT_TOKEN` in `.env` and enable
 at least one platform, for example `YOUTUBE_ENABLED=true`. Then run:
 
 ```bash
 uv run main.py
 ```
 
-This starts Redis, the local Telegram Bot API, and the PO-token provider in Docker and runs both
-the bot and Celery worker locally with interleaved logs. Default Docker service addresses become
+This starts Redis and the PO-token provider in Docker and runs both
+the bot and Celery worker locally with interleaved logs. Without `TELEGRAM_API_ID` and
+`TELEGRAM_API_HASH`, it uses Telegram's cloud Bot API with a maximum 50 MB upload limit.
+To use the local Bot API for larger uploads, set both credentials and perform the one-time
+cloud Bot API logout described in Setup; the launcher then starts that service too.
+Default Docker service addresses become
 localhost addresses automatically; default downloads/cookies paths become project directories.
 Host files upload over HTTP to the local Bot API, so no host download-volume mapping is needed.
 Explicit custom service URLs and directory paths are preserved. The launcher leaves `.env` unchanged.
-Ports 6379, 8081, and 4416 must be available; they bind only to localhost.
+Ports 6379 and 4416 (plus 8081 in local Bot API mode) must be available; they bind only to localhost.
+Deno is also detected at `~/.deno/bin/deno` if its install directory is missing from `PATH`.
 
 Do not run the Compose `bot` / `worker` containers at the same time as the local processes:
 `docker compose stop bot worker`. Ctrl+C stops the local bot and worker; active downloads have
