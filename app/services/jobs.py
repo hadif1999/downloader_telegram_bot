@@ -15,6 +15,7 @@ from app.config import get_settings
 from app.models import MediaInfo
 from app.services import cache, captions, media, requests
 from app.services.delivery import CheckpointError, Journal, invalid_file_id, reply_params, send_cached
+from app.services.errors import user_message
 from app.services.keyboards import formats_kb
 
 log = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ async def request_download(
     request_id = uuid.uuid4().hex
     created = False
     publish_started = False
+    status_card = card
     try:
         from app.worker.tasks import download_media
 
@@ -113,6 +115,7 @@ async def request_download(
                 reply_parameters=reply_params(reply_to),
             )
             status_id, is_caption = status.message_id, False
+            status_card = status
         # Card edits or cached-send attempts may have taken time. Align the owned
         # queue lease with the message expiry immediately before publication.
         if not await asyncio.to_thread(requests.prepare_queue, request_id, user_id):
@@ -128,8 +131,10 @@ async def request_download(
         return None
     except requests.DeliveryUncertain:
         return captions.UNCERTAIN
-    except Exception:
-        log.exception("download request failed")
+    except Exception as error:
+        log.exception(
+            "download request failed: request=%s platform=%s media=%s", request_id, info.platform, info.id
+        )
         if created:
             try:
                 if not await asyncio.to_thread(
@@ -143,12 +148,12 @@ async def request_download(
             except Exception:
                 log.exception("couldn't confirm queue cancellation: %s", request_id)
                 return captions.UNCERTAIN
-        if card is not None:
+        if status_card is not None:
             with contextlib.suppress(Exception):
                 kb = formats_kb(info, get_settings().max_file_bytes)
-                text = captions.status_caption(info, captions.FAILED, fmt, lang)
-                if card.photo:
-                    await card.edit_caption(caption=text, reply_markup=kb)
+                text = captions.status_caption(info, user_message(error), fmt, lang)
+                if status_card.photo:
+                    await status_card.edit_caption(caption=text, reply_markup=kb)
                 else:
-                    await card.edit_text(text, reply_markup=kb)
-        return captions.FAILED
+                    await status_card.edit_text(text, reply_markup=kb)
+        return user_message(error)

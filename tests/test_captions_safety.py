@@ -135,7 +135,7 @@ def test_callback_acknowledges_before_resolve_and_sends_plain_description(monkey
     msg = MagicMock(spec=Message)
     msg.answer = AsyncMock()
     cq = SimpleNamespace(data="desc|yt|id||", message=msg, answer=AsyncMock())
-    cq.answer.side_effect = lambda: events.append("ack")
+    cq.answer.side_effect = lambda **kwargs: events.append("ack")
     info = MediaInfo("yt", "id", "url", "Title", description="x" * 3998 + "<>&" * 30)
 
     async def resolve(*args):

@@ -20,7 +20,7 @@ def worker(request_store, monkeypatch, tmp_path):
     i = MediaInfo(
         "yt", "id", "https://youtu.be/abcdefghijk", "Title", formats=[FormatOption("720", "720p", 10, 720)]
     )
-    monkeypatch.setattr(tasks, "make_bot", lambda: b)
+    monkeypatch.setattr(tasks, "make_bot", lambda **kwargs: b)
     monkeypatch.setattr(tasks, "get_settings", lambda: NS(download_dir=tmp_path, max_file_bytes=1000))
     monkeypatch.setattr(tasks.media, "resolve", lambda *a: i)
     monkeypatch.setattr(tasks, "make_thumb", lambda *a: None)
@@ -124,3 +124,33 @@ def test_replay_after_final_checkpoint_skips_download(worker):
     worker.download.assert_not_called()
     worker.bot.send_video.assert_not_awaited()
     assert requests.load("a", 10)["phase"] == "done"
+
+
+def test_request_store_failure_before_claim_reports_status_and_closes_session(worker, monkeypatch):
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    from app.services.errors import TEMPORARY
+
+    failure = RedisConnectionError("lease store unavailable")
+    monkeypatch.setattr(requests, "claim", MagicMock(side_effect=failure))
+    with pytest.raises(RedisConnectionError) as caught:
+        run()
+    assert caught.value is failure
+    assert worker.edit.call_args.args[3] == TEMPORARY
+    worker.bot.session.close.assert_awaited_once()
+    worker.download.assert_not_called()
+
+
+@pytest.mark.parametrize("download_fails", [False, True])
+def test_session_cleanup_cannot_change_download_outcome(worker, download_fails):
+    worker.bot.session.close.side_effect = RuntimeError("cleanup failure")
+    if download_fails:
+        failure = RuntimeError("original download failure")
+        worker.download.side_effect = failure
+        with pytest.raises(RuntimeError) as caught:
+            run()
+        assert caught.value is failure
+    else:
+        run()
+        worker.bot.send_video.assert_awaited_once()
+        assert requests.load("a", 10)["phase"] == "done"

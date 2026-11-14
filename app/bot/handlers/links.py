@@ -9,10 +9,10 @@ from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InputMediaPhoto, Message
 
+from app.bot.errors import report_error
 from app.config import get_settings
 from app.models import MediaInfo
 from app.platforms import registry
-from app.platforms.ytdlp import UserError
 from app.services import captions, media
 from app.services.delivery import edit_status
 from app.services.jobs import request_download
@@ -79,13 +79,15 @@ async def on_link(message: Message) -> None:
             finally:
                 progress.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
-                    await progress
-    except UserError as e:
-        await status.edit_text(f"⚠️ {e}")
-        return
-    except Exception:
-        log.exception("extract failed: %s", url)
-        await status.edit_text(f"⚠️ Couldn't get this {platform.title} post. Is it public?")
+                    try:
+                        await progress
+                    except Exception:
+                        log.exception(
+                            "extraction progress failed: platform=%s media=%s", platform.name, media_id
+                        )
+    except Exception as error:
+        log.exception("extract failed: platform=%s media=%s", platform.name, media_id)
+        await report_error(status, error, edit=True)
         return
 
     try:
@@ -104,6 +106,6 @@ async def on_link(message: Message) -> None:
                 await status.edit_text(error)
             return
         await send_info_card(status, info)
-    except Exception:
-        log.exception("couldn't prepare media: %s", url)
-        await status.edit_text(captions.FAILED)
+    except Exception as error:
+        log.exception("couldn't prepare media: platform=%s media=%s", platform.name, media_id)
+        await report_error(status, error, edit=True)

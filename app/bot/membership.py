@@ -10,6 +10,7 @@ from aiogram.enums import ChatMemberStatus, ChatType
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.types import CallbackQuery, Message
 
+from app.bot.errors import acknowledge_callback
 from app.bot.handlers.start import send_welcome
 from app.config import Settings
 from app.platforms import registry
@@ -107,16 +108,18 @@ class MembershipMiddleware(BaseMiddleware):
                 )
             )
             if event.data != f"{CHECK_PREFIX}{user.id}" or not valid_button:
-                await event.answer("Send /start to check your own membership.", show_alert=True)
+                await acknowledge_callback(
+                    event, "Send /start to check your own membership.", show_alert=True
+                )
                 return None
-            await event.answer()  # don't leave a spinner while querying Telegram
+            await acknowledge_callback(event)  # don't leave a spinner while querying Telegram
         bot = data["bot"]
         try:
             joined = self.channel_id is None or await self.member(bot, user.id)
         except (TelegramAPIError, TimeoutError) as error:
             log.warning("membership verification unavailable: %s", type(error).__name__)
             if callback and not check:
-                await event.answer(captions.JOIN_UNAVAILABLE, show_alert=True)
+                await acknowledge_callback(event, captions.JOIN_UNAVAILABLE, show_alert=True)
             if isinstance(message, Message):
                 await self.prompt(message, user.id, captions.JOIN_UNAVAILABLE, edit=check)
             return None  # fail closed; an API outage never grants access
@@ -130,7 +133,7 @@ class MembershipMiddleware(BaseMiddleware):
                 return None
             return await handler(event, data)
         if callback and not check:
-            await event.answer(captions.JOIN_REQUIRED, show_alert=True)
+            await acknowledge_callback(event, captions.JOIN_REQUIRED, show_alert=True)
         if isinstance(message, Message):
             await self.prompt(
                 message, user.id, captions.JOIN_NOT_FOUND if check else captions.JOIN_REQUIRED, edit=check

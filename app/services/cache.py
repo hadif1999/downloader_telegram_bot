@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from functools import lru_cache
 
 import redis
@@ -13,6 +14,7 @@ from app.config import get_settings
 from app.models import MediaInfo
 
 SRC_TTL = 30 * 24 * 3600
+log = logging.getLogger(__name__)
 
 
 @lru_cache
@@ -44,8 +46,17 @@ def save_info(info: MediaInfo) -> None:
 
 
 def load_info(platform: str, media_id: str) -> MediaInfo | None:
-    raw = client().get(f"info:{platform}:{media_id}")
-    return MediaInfo.from_dict(json.loads(raw)) if raw else None
+    key = f"info:{platform}:{media_id}"
+    raw = client().get(key)
+    if not raw:
+        return None
+    try:
+        return MediaInfo.from_dict(json.loads(raw))
+    except (ValueError, TypeError, KeyError, AttributeError):
+        # Evict disposable metadata only; never discard request journals or source URLs.
+        log.warning("discarding invalid metadata cache: platform=%s media=%s", platform, media_id)
+        client().delete(key)
+        return None
 
 
 def load_src(platform: str, media_id: str) -> str | None:

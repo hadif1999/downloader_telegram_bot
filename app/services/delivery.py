@@ -12,6 +12,7 @@ from aiogram import Bot
 from aiogram.exceptions import (
     TelegramAPIError,
     TelegramBadRequest,
+    TelegramEntityTooLarge,
     TelegramNetworkError,
     TelegramRetryAfter,
     TelegramServerError,
@@ -101,25 +102,35 @@ class Journal:
         self.total = total
         await self.phase("working")
 
-    async def send(self, call):
+    async def send(self, call, expected: int = 1):
         await self.phase("sending")  # persist intent before the external side effect
         try:
             messages = await retry_send(call)
+            batch = [
+                ["video" if m.video else "audio" if m.audio else "photo", sent_file_id(m)] for m in messages
+            ]
+            if (
+                len(batch) != expected
+                or any(not isinstance(fid, str) or not fid for _, fid in batch)
+                or len(self.sent) + len(batch) > self.total
+            ):
+                raise ValueError("Incomplete or invalid Telegram media response")
         except Exception as error:
-            definite_rejection = isinstance(error, DeliveryNotSent) or (
+            definite_rejection = isinstance(error, (DeliveryNotSent, TelegramEntityTooLarge)) or (
                 isinstance(error, TelegramAPIError)
                 and not isinstance(error, (TelegramNetworkError, TelegramServerError))
             )
             if definite_rejection:
-                await self.phase("ready")
+                try:
+                    await self.phase("ready")
+                except Exception:
+                    log.exception("couldn't record rejected upload: request=%s", self.request_id)
                 raise
             # Malformed/unknown responses can follow an accepted request too.
             with contextlib.suppress(Exception):
                 await self.phase("uncertain")
             raise requests.DeliveryUncertain from error
-        self.sent.extend(
-            [["video" if m.video else "audio" if m.audio else "photo", sent_file_id(m)] for m in messages]
-        )
+        self.sent.extend(batch)
         try:
             await self.phase("ready")
         except Exception as error:
@@ -206,7 +217,7 @@ async def send_gallery(
                 return [msg]
             return await bot.send_media_group(chat_id, group, reply_parameters=reply_params(reply_to))
 
-        sent += await journal.send(send) if journal else await retry_send(send)
+        sent += await journal.send(send, expected=len(group)) if journal else await retry_send(send)
     return sent
 
 
@@ -269,7 +280,9 @@ async def edit_status(bot: Bot, chat_id: int, msg_id: int, text: str, is_caption
             )
         else:
             await bot.edit_message_text(text, chat_id=chat_id, message_id=msg_id, request_timeout=5)
-    except (TelegramAPIError, TelegramNetworkError) as e:
+    except (TelegramAPIError, TimeoutError) as e:
         # "message is not modified", deleted message, flood limits, network blips:
         # a failed status edit must never abort the download itself
-        log.debug("status edit failed: %s", e)
+        log.debug("status edit failed: %s", type(e).__name__)
+    except Exception:
+        log.exception("unexpected status edit failure: chat=%s message=%s", chat_id, msg_id)

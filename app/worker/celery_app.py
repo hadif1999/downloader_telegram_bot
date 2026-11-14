@@ -1,6 +1,11 @@
 from celery import Celery
+from celery.signals import after_setup_logger, after_setup_task_logger
 
 from app.config import get_settings
+from app.logging_config import redact_logs
+
+after_setup_logger.connect(redact_logs, weak=False)
+after_setup_task_logger.connect(redact_logs, weak=False)
 
 s = get_settings()
 

@@ -198,7 +198,7 @@ def test_old_download_buttons_cannot_bypass_membership(action):
     b, cq = bot(), callback(f"{action}|yt|id|720|")
     _, h = invoke(gate(), cq, b)
     h.assert_not_awaited()
-    cq.answer.assert_awaited_once_with(captions.JOIN_REQUIRED, show_alert=True)
+    cq.answer.assert_awaited_once_with(captions.JOIN_REQUIRED, show_alert=True, request_timeout=5)
     cq.message.answer.assert_awaited_once()
 
 
@@ -232,7 +232,7 @@ def test_membership_is_rechecked_when_user_leaves():
 def test_check_acknowledges_before_lookup_and_then_shows_welcome(monkeypatch):
     b, cq = bot(ChatMemberStatus.MEMBER), callback()
     events = []
-    cq.answer.side_effect = lambda: events.append("ack")
+    cq.answer.side_effect = lambda **kwargs: events.append("ack")
 
     async def checked(*a, **kw):
         events.append("check")
@@ -260,7 +260,9 @@ def test_other_users_cannot_take_over_group_membership_prompts():
     _, h = invoke(gate(), cq, b)
     h.assert_not_awaited()
     b.get_chat_member.assert_not_awaited()
-    cq.answer.assert_awaited_once_with("Send /start to check your own membership.", show_alert=True)
+    cq.answer.assert_awaited_once_with(
+        "Send /start to check your own membership.", show_alert=True, request_timeout=5
+    )
 
 
 def test_forged_check_data_must_match_original_keyboard():
@@ -286,7 +288,7 @@ def test_failed_check_callback_stops_spinner_and_shows_retry():
     b.get_chat_member.side_effect = TimeoutError()
     _, h = invoke(gate(), cq, b)
     h.assert_not_awaited()
-    cq.answer.assert_awaited_once_with()
+    cq.answer.assert_awaited_once_with(request_timeout=5)
     assert captions.JOIN_UNAVAILABLE in cq.message.edit_text.call_args.args[0]
 
 

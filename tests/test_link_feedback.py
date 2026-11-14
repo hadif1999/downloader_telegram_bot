@@ -73,7 +73,7 @@ def test_failed_delivery_replaces_pending_status(link_request):
     message, status, _ = link_request
     links.request_download.side_effect = RuntimeError("Telegram unavailable")
     asyncio.run(links.on_link(message))
-    status.edit_text.assert_awaited_once_with(captions.FAILED)
+    status.edit_text.assert_awaited_once_with(captions.FAILED, request_timeout=5)
 
 
 @pytest.mark.parametrize("fails", [False, True])
@@ -101,6 +101,29 @@ def test_extraction_heartbeat_stops_before_delivery(monkeypatch, link_request, f
         assert stopped.is_set()
 
     asyncio.run(check())
+
+
+@pytest.mark.parametrize("extraction_fails", [False, True])
+def test_failed_heartbeat_does_not_replace_extraction_outcome(monkeypatch, link_request, extraction_fails):
+    message, status, info = link_request
+
+    async def heartbeat(*args):
+        raise RuntimeError("progress failed")
+
+    async def resolve(*args):
+        await asyncio.sleep(0)
+        if extraction_fails:
+            raise UserError("Original extraction error")
+        return info
+
+    monkeypatch.setattr(links, "extraction_progress", heartbeat)
+    monkeypatch.setattr(links.asyncio, "to_thread", resolve)
+    asyncio.run(links.on_link(message))
+    if extraction_fails:
+        assert "Original extraction error" in status.edit_text.call_args.args[0]
+        links.request_download.assert_not_awaited()
+    else:
+        links.request_download.assert_awaited_once()
 
 
 def test_waiting_for_extraction_slot_is_acknowledged(monkeypatch, link_request):

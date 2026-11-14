@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter
 
-from app.services import delivery, requests
+from app.services import captions, delivery, requests
 
 
 def message(kind="photo", file_id="fid"):
@@ -104,6 +104,73 @@ def test_unknown_response_error_is_uncertain_not_safe_to_resend(request_store):
     assert requests.load("a", 10)["phase"] == "uncertain"
 
 
+@pytest.mark.parametrize("response", [None, [], [object()], [message(file_id=None)], [message(), message()]])
+def test_malformed_accepted_response_never_marks_failure_or_allows_replay(request_store, response):
+    requests.create("a", 10)
+    requests.claim("a", 10, "owner")
+    journal = delivery.Journal("a", 10, "owner", total=1)
+    send = AsyncMock(return_value=response)
+    with pytest.raises(requests.DeliveryUncertain):
+        asyncio.run(journal.send(send))
+    assert journal.sent == []
+    assert requests.load("a", 10)["phase"] == "uncertain"
+    send.assert_awaited_once()
+
+
+def test_short_album_response_is_uncertain_instead_of_silently_truncating(request_store):
+    requests.create("a", 10)
+    requests.claim("a", 10, "owner")
+    journal = delivery.Journal("a", 10, "owner")
+    b = bot()
+    b.send_media_group.side_effect = None
+    b.send_media_group.return_value = [message()]
+    with pytest.raises(requests.DeliveryUncertain):
+        asyncio.run(delivery.send_gallery(b, 1, [("file", "photo")] * 2, "caption", journal=journal))
+    assert journal.sent == []
+    assert requests.load("a", 10)["phase"] == "uncertain"
+
+
+def test_upload_cancellation_stays_unresolved_and_replay_cannot_resend(request_store):
+    async def scenario():
+        requests.create("a", 10)
+        async with requests.execution("a", 10) as owner:
+            journal = await delivery.Journal.load("a", 10, owner)
+            await journal.prepare(1)
+            with pytest.raises(asyncio.CancelledError):
+                await journal.send(AsyncMock(side_effect=asyncio.CancelledError()))
+        assert requests.load("a", 10)["phase"] == "sending"
+        assert requests.claim("a", 10, "replay") == -1
+        assert requests.load("a", 10)["phase"] == "uncertain"
+
+    asyncio.run(scenario())
+
+
+def test_http_413_is_definite_rejection_not_ambiguous_network_failure(request_store):
+    from aiogram.exceptions import TelegramEntityTooLarge
+
+    from app.services.errors import user_message
+
+    requests.create("a", 10)
+    requests.claim("a", 10, "owner")
+    failure = TelegramEntityTooLarge(method=MagicMock(), message="Request Entity Too Large")
+    send = AsyncMock(side_effect=failure)
+    with pytest.raises(TelegramEntityTooLarge):
+        asyncio.run(delivery.Journal("a", 10, "owner", total=1).send(send))
+    assert requests.load("a", 10)["phase"] == "ready"
+    assert user_message(failure) == captions.TOO_BIG
+    send.assert_awaited_once()
+
+
+def test_checkpoint_failure_cannot_hide_a_definite_rejection(monkeypatch):
+    failure = TelegramBadRequest(method=MagicMock(), message="chat not found")
+    journal = delivery.Journal("a", 10, "owner", total=1)
+    phase = AsyncMock(side_effect=[None, ConnectionError("checkpoint unavailable")])
+    monkeypatch.setattr(journal, "phase", phase)
+    with pytest.raises(TelegramBadRequest) as caught:
+        asyncio.run(journal.send(AsyncMock(side_effect=failure)))
+    assert caught.value is failure
+
+
 def test_rejected_file_id_does_not_commit_a_batch(request_store):
     requests.create("a", 10)
     requests.claim("a", 10, "owner")
@@ -132,16 +199,17 @@ def test_connect_failure_retries_but_response_timeout_does_not(monkeypatch):
     assert send.await_count == 2
 
 
+@pytest.mark.parametrize("for_upload", [False, True])
 @pytest.mark.parametrize("url", ["", "http://telegram-bot-api:8081", "http://127.0.0.1:8081"])
-def test_bot_session_supports_cloud_and_trusted_local_api(monkeypatch, url):
+def test_bot_session_supports_cloud_and_trusted_local_api(monkeypatch, url, for_upload):
     from app.config import Settings
     from app.services import telegram
 
     settings = Settings(_env_file=None, bot_api_url=url, bot_api_local=bool(url))
     monkeypatch.setattr(telegram, "get_settings", lambda: settings)
-    b = telegram.make_bot()
+    b = telegram.make_bot(for_upload=for_upload)
     assert b.id == 123456
-    assert b.session.timeout == 1800
+    assert b.session.timeout == (1800 if for_upload else 30)
     if url:
         assert b.session.api.base.startswith(url)
     asyncio.run(b.session.close())

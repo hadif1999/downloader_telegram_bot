@@ -7,7 +7,9 @@ from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, Message
 
+from app.bot.errors import acknowledge_callback, report_error
 from app.config import get_settings
+from app.platforms import registry
 from app.services import captions, media
 from app.services.delivery import retry_send
 from app.services.jobs import request_download
@@ -23,9 +25,14 @@ async def on_callback(cq: CallbackQuery, bot: Bot) -> None:
     action, platform_name, media_id, fmt, lang = parse_cb(cq.data)
     msg = cq.message
     if not isinstance(msg, Message):
-        await cq.answer(captions.EXPIRED, show_alert=True)
+        await acknowledge_callback(cq, captions.EXPIRED, show_alert=True)
         return
-    await cq.answer()  # stop the spinner before Redis, extraction or queue publication
+    await acknowledge_callback(cq)  # stop the spinner before Redis, extraction or queue publication
+    try:
+        registry.get(platform_name)
+    except KeyError:
+        await msg.answer(captions.EXPIRED)
+        return
     try:
         info = await media.resolve_async(platform_name, media_id)
         if info is None:
@@ -67,12 +74,10 @@ async def on_callback(cq: CallbackQuery, bot: Bot) -> None:
         elif action == "desc":
             for chunk in captions.text_chunks(info.description or "No description."):
                 await msg.answer(chunk, parse_mode=None)
-    except KeyError:
-        await msg.answer(captions.EXPIRED)  # disabled platform / obsolete callback
     except TelegramBadRequest as error:
         if "message is not modified" not in error.message.lower():
             log.exception("callback rejected: %s %s", platform_name, media_id)
-            await msg.answer(captions.FAILED)
-    except Exception:
+            await report_error(msg, error)
+    except Exception as error:
         log.exception("callback failed: %s %s", platform_name, media_id)
-        await msg.answer(captions.FAILED)
+        await report_error(msg, error)

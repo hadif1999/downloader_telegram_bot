@@ -41,6 +41,10 @@ Every platform lives in `app/platforms/`: generic yt-dlp sites are a few lines i
 
 ## Architecture
 
+Failure handling and recovery rules are documented in [docs/RELIABILITY.md](docs/RELIABILITY.md).
+Users receive specific retry/permission/size messages; unknown failures retain diagnostic logs.
+Unconfirmed uploads are never retried automatically, to avoid duplicate deliveries.
+
 ```
 Telegram ⇄ telegram-bot-api (local server, 2 GB uploads)
               ⇅                           ▲ file:// (shared volume)

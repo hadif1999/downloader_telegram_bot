@@ -111,6 +111,45 @@ plain-text status messages use the same layout through queueing, download and up
 | 19. Unsupported thumbnail URL document | Bounded local upload and cleanup | `test_captions_safety.py` |
 | 20. No safe upload recovery | Bounded definite-failure retries; uncertain outcomes stop | `test_delivery.py`, `test_worker_delivery.py` |
 
+## Error handling and recovery
+
+Bot updates have a final error observer in addition to contextual link/callback handling. Expected
+failures receive specific advice for unavailable source media, upload limits, permissions, rate
+limits, temporary infrastructure failures, processing failures, and timeouts. Only explicit
+`UserError` messages are displayed; they are escaped and bounded. Unknown exception details stay
+in logs. Disabled/obsolete platforms are distinguished from unexpected `KeyError` bugs.
+
+Callback acknowledgements and error feedback use five-second deadlines. Expired acknowledgements
+do not abort a valid action. A deleted status can receive one fallback message, while an ambiguous
+feedback timeout is not retried. Status edits are best effort: a timeout or malformed status response
+cannot fail the download. Progress-task and session-cleanup failures cannot replace the primary
+outcome. Normal bot API calls have a 30-second session timeout; worker upload calls retain the
+existing longer deadline capped by the task limit.
+
+The worker also reports request-store failures that happen before lease acquisition, closes its bot
+session, and still raises the original error for Celery monitoring. A definite queue-publication
+failure updates either the original format card or a newly created progress message. Redis failures
+are not treated as successful queue operations or cache misses. Unreadable metadata entries are
+evicted individually for re-extraction; request journals and stored source URLs remain intact.
+
+Upload responses must contain the expected number of media messages and valid file IDs before a
+batch is checkpointed. A malformed/partial response or cancellation during upload leaves an unknown
+delivery outcome and prevents automatic resend. HTTP 413 is a definite size rejection, even though
+aiogram represents it as a network-error subclass. Failure to record a definite rejection preserves
+the original exception. Once delivery is confirmed, cache, final-checkpoint, and cleanup failures do
+not turn it into a reported download failure.
+
+Bot and Celery log formatters mask bot tokens, URL credentials, query strings, and fragments in
+messages and tracebacks. Logs retain request/update identifiers and stack traces for diagnosis.
+This protects those particular values; it is not a general-purpose scrubber for arbitrary secrets
+inside third-party output. Avoid logging raw configuration or cookie contents.
+
+Targeted verification for this change: **193 tests passed** across error handling, link feedback,
+delivery, worker delivery, queueing, caption safety, startup, and membership. These include real
+isolated Redis journal checks and mocked Telegram/Dispatcher failures. Error feedback cannot be
+guaranteed while Telegram is unreachable or the bot is blocked. Hard process kills, external-service
+compatibility, live rollout, and full-suite/release validation were not exercised.
+
 ## Running checks
 
 The test setup disables deployment dotenv loading and external sockets/DNS, including thumbnail

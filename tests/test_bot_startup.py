@@ -24,3 +24,17 @@ def test_bot_session_closes_even_when_startup_fails(monkeypatch, startup_fails):
         asyncio.run(bot_main.main())
         assert dispatcher.start_polling.call_args.kwargs["close_bot_session"] is False
     bot.session.close.assert_awaited_once()
+
+
+def test_cleanup_failure_preserves_startup_error(monkeypatch):
+    failure = RuntimeError("original startup failure")
+    bot = MagicMock()
+    bot.delete_webhook = AsyncMock(side_effect=failure)
+    bot.session.close = AsyncMock(side_effect=RuntimeError("cleanup failure"))
+    dispatcher = MagicMock()
+    dispatcher.start_polling = AsyncMock()
+    monkeypatch.setattr(bot_main, "make_bot", lambda: bot)
+    monkeypatch.setattr(bot_main, "Dispatcher", lambda: dispatcher)
+    with pytest.raises(RuntimeError) as caught:
+        asyncio.run(bot_main.main())
+    assert caught.value is failure

@@ -8,6 +8,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 
 from app.models import FormatOption, GalleryItem, MediaInfo
 from app.services import cache, captions, jobs, requests
+from app.services.errors import RATE_LIMITED, TEMPORARY
 from app.worker import tasks
 
 
@@ -43,13 +44,24 @@ def test_publish_failure_restores_card_cancels_request_and_releases_lock(request
     c = card()
     assert (
         asyncio.run(jobs.request_download(bot(), info(), "720", None, chat_id=1, user_id=10, card=c))
-        == captions.FAILED
+        == TEMPORARY
     )
-    assert captions.FAILED in c.edit_text.call_args.args[0]
+    assert TEMPORARY in c.edit_text.call_args.args[0]
     assert c.edit_text.call_args.kwargs["reply_markup"].inline_keyboard
     request_id = publish.call_args.kwargs["task_id"]
     assert requests.load(request_id, 10)["phase"] == "cancelled"
     assert request_store.get(requests.keys(request_id, 10)[2]) is None
+
+
+def test_publish_failure_also_updates_new_status_when_no_card_was_supplied(request_store, monkeypatch):
+    monkeypatch.setattr(
+        tasks.download_media, "apply_async", MagicMock(side_effect=ConnectionError("broker offline"))
+    )
+    b, status = bot(), card()
+    b.send_message.return_value = status
+    assert asyncio.run(jobs.request_download(b, info(), "720", None, chat_id=1, user_id=10)) == TEMPORARY
+    assert TEMPORARY in status.edit_text.call_args.args[0]
+    assert status.edit_text.call_args.kwargs["reply_markup"].inline_keyboard
 
 
 def test_ambiguous_publish_claimed_by_worker_is_not_cancelled(request_store, monkeypatch):
@@ -168,9 +180,7 @@ def test_definite_cached_send_failure_leaves_no_live_request(request_store, monk
     b = bot()
     b.send_video.side_effect = TelegramRetryAfter(method=MagicMock(), message="rate limited", retry_after=61)
     monkeypatch.setattr(tasks.download_media, "apply_async", MagicMock())
-    assert (
-        asyncio.run(jobs.request_download(b, info(), "720", None, chat_id=1, user_id=10)) == captions.FAILED
-    )
+    assert asyncio.run(jobs.request_download(b, info(), "720", None, chat_id=1, user_id=10)) == RATE_LIMITED
     records = list(request_store.scan_iter("request:*"))
     assert len(records) == 1
     assert request_store.hget(records[0], "phase") == "cancelled"
