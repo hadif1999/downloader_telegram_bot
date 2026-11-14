@@ -82,7 +82,7 @@ async def _run(
         journal = None
 
         async def status(text):
-            body = captions.status_caption(info, text) if is_caption and info else text
+            body = captions.status_caption(info, text, fmt, lang) if info else text
             await edit_status(bot, chat_id, msg_id, body, is_caption)
 
         try:

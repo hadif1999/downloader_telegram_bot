@@ -50,7 +50,7 @@ def _units(html: str) -> int:
     return len(unescape(re.sub(r"<[^>]*>", "", html)).encode("utf-16-le")) // 2
 
 
-def _caption(info: MediaInfo, suffix: str) -> str:
+def _caption(info: MediaInfo, suffix: str, *, header: str | None = None) -> str:
     # Keep complete HTML lines and reserve room for the status/actions. Never slice markup.
     tail = []
     for line in suffix.splitlines():
@@ -60,7 +60,7 @@ def _caption(info: MediaInfo, suffix: str) -> str:
     suffix = "\n".join(tail)
     budget = CAPTION_LIMIT - _units(suffix) - 2
     head = []
-    for line in info_header(info).splitlines():
+    for line in (info_header(info) if header is None else header).splitlines():
         if _units("\n".join([*head, line])) <= budget:
             head.append(line)
     return "\n".join(head) + (f"\n\n{suffix}" if suffix else "")
@@ -130,11 +130,26 @@ def info_caption(info: MediaInfo, max_bytes: int) -> str:
     return _caption(info, f"{body}\n\nFormats for download ⤵️")
 
 
-def status_caption(info: MediaInfo, status: str) -> str:
-    return _caption(info, status)
+def status_caption(info: MediaInfo, status: str, fmt: str | None = None, lang: str | None = None) -> str:
+    """Put the active stage first, with only the media context needed during a download."""
+    details = []
+    if info.uploader:
+        details.append(_short(info.uploader, 50))
+    if fmt and (option := info.format(fmt)):
+        details.append(_short(option.label, 40))
+    elif fmt == "all" and info.items:
+        details.append(f"{len(info.items)} files")
+    if lang:
+        details.append(_short(lang.upper(), 20))
+    if info.duration:
+        details.append(human_duration(info.duration))
+    context = _link(_short(info.title, 140), info.url)
+    if details:
+        context += "\n<i>" + escape(" · ".join(details)) + "</i>"
+    return _caption(info, context, header=status)
 
 
-QUEUED = "🕐 The selected format has been added to the download queue. Please wait…"
+QUEUED = "🕓 <b>Queued</b>\nWaiting for a download slot…"
 EXTRACT_WAITING = "🔗 Link received. Waiting to fetch media details…"
 
 
@@ -145,7 +160,7 @@ def extracting_caption(platform: str, elapsed: int = 0) -> str:
     return text
 
 
-UPLOADING = "📤 Uploading to Telegram…"
+UPLOADING = "📤 <b>Uploading to Telegram</b>\nDownload complete. Sending your file…"
 BUSY = "⏳ You already have a download in progress. Please wait until it finishes."
 EXPIRED = "⌛ This request has expired, please send the link again."
 FAILED = "⚠️ Download failed. Please try again later or pick another format."
@@ -155,13 +170,28 @@ UNCERTAIN = "⚠️ Delivery could not be confirmed. Please check the chat befor
 
 
 def progress_text(done: int, total: int | None, cells: int = 10, unit: str = "bytes") -> str:
-    if not total:
-        return f"📥 Downloading…\n{human_size(done)}"
+    done = max(0, done)
+    if total is None or total <= 0:
+        if not done:
+            return "⏳ <b>Preparing download</b>\nWaiting for the first bytes…"
+        amount = (
+            f"<b>{done}</b> files downloaded" if unit == "files" else f"<b>{human_size(done)}</b> received"
+        )
+        hint = (
+            "Total count not provided by the source."
+            if unit == "files"
+            else "Total size not provided by the source."
+        )
+        return f"⬇️ <b>Downloading</b>\n{amount}\n<i>{hint}</i>"
     pct = max(0, min(100, int(done * 100 / total)))
     filled = pct * cells // 100
     bar = "▓" * filled + "░" * (cells - filled)
-    amount = f"{done}/{total} files" if unit == "files" else f"{human_size(done)} / {human_size(total)}"
-    return f"📥 Downloading…\n{bar} {pct}%  ({amount})"
+    amount = (
+        f"<b>{done}</b> / {total} files"
+        if unit == "files"
+        else f"<b>{human_size(done) if done else '0B'}</b> / {human_size(total)}"
+    )
+    return f"⬇️ <b>Downloading</b>\n<code>{bar}</code> <b>{pct}%</b>\n{amount}"
 
 
 def result_caption(info: MediaInfo, bot_username: str) -> str:

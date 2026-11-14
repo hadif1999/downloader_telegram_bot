@@ -38,8 +38,19 @@ def worker(request_store, monkeypatch, tmp_path):
     return NS(bot=b, info=i, edit=edit, download=download, directory=tmp_path)
 
 
-def run():
-    return asyncio.run(tasks._run(1, 20, False, "yt", "id", "720", None, None, 10, "a"))
+def run(is_caption=False):
+    return asyncio.run(tasks._run(1, 20, is_caption, "yt", "id", "720", None, None, 10, "a"))
+
+
+@pytest.mark.parametrize("is_caption", [False, True])
+def test_status_layout_is_consistent_for_text_and_photo_cards(worker, is_caption):
+    worker.info.uploader = "Creator"
+    run(is_caption)
+    updates = worker.edit.call_args_list
+    assert updates[0].args[3].startswith("⏳ <b>Preparing download</b>")
+    assert updates[-1].args[3].startswith("📤 <b>Uploading to Telegram</b>")
+    assert all("Title" in c.args[3] and "Creator · 720p" in c.args[3] for c in updates)
+    assert all(c.args[4] == is_caption for c in updates)
 
 
 def test_success_caches_result_cleans_files_and_deduplicates_replay(worker):
@@ -56,7 +67,7 @@ def test_file_cache_failure_does_not_turn_success_into_failure(worker, monkeypat
     monkeypatch.setattr(cache, "save_file_id", MagicMock(side_effect=ConnectionError("cache failed")))
     run()
     assert requests.load("a", 10)["phase"] == "done"
-    assert all(c.args[3] != captions.FAILED for c in worker.edit.call_args_list)
+    assert all(captions.FAILED not in c.args[3] for c in worker.edit.call_args_list)
     worker.bot.delete_message.assert_awaited_once_with(1, 20)
 
 
@@ -73,7 +84,7 @@ def test_checkpoint_failure_after_upload_does_not_report_failure_or_repeat(
     monkeypatch.setattr(requests, "transition", transition)
     run()
     assert requests.load("a", 10)["phase"] == "sending"
-    assert all(c.args[3] != captions.FAILED for c in worker.edit.call_args_list)
+    assert all(captions.FAILED not in c.args[3] for c in worker.edit.call_args_list)
     run()
     worker.bot.send_video.assert_awaited_once()
     assert requests.load("a", 10)["phase"] == "uncertain"
@@ -84,7 +95,7 @@ def test_ambiguous_upload_marks_uncertain_and_raises_not_celery_success(worker):
     with pytest.raises(requests.DeliveryUncertain):
         run()
     assert requests.load("a", 10)["phase"] == "uncertain"
-    assert worker.edit.call_args.args[3] == captions.UNCERTAIN
+    assert worker.edit.call_args.args[3] == captions.status_caption(worker.info, captions.UNCERTAIN, "720")
     worker.bot.send_video.assert_awaited_once()
     assert not list(worker.directory.iterdir())
 

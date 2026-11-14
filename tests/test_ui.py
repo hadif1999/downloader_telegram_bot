@@ -62,10 +62,10 @@ def test_result_kb():
 
 
 def test_progress_text():
-    assert "▓░░░░░░░░░ 10%" in captions.progress_text(10, 100)
+    assert "<code>▓░░░░░░░░░</code> <b>10%</b>" in captions.progress_text(10, 100)
     assert "100%" in captions.progress_text(150, 100)
     assert "Downloading" in captions.progress_text(5, None)
-    assert "(2/4 files)" in captions.progress_text(2, 4, unit="files")
+    assert "<b>2</b> / 4 files" in captions.progress_text(2, 4, unit="files")
 
 
 def test_welcome_lists_platforms():

@@ -79,6 +79,13 @@ status/action text. Descriptions are split as plain text and sent with HTML pars
 Callbacks acknowledge immediately and share the same four-slot extraction limiter as new links.
 Synchronous Redis and Celery publication run in threads with bounded service timeouts.
 
+Download status messages put the current stage first, followed by a monospaced progress bar,
+percentage, and received/total amount when available. The title, creator, chosen format/language,
+and duration form a compact footer; the full metadata stays on the format-selection/result cards.
+Before the first bytes arrive the status says "Preparing download". An unknown total shows received
+bytes or file counts without a fabricated percentage or a lone question mark. Photo-caption and
+plain-text status messages use the same layout through queueing, download and upload.
+
 ## Regression coverage for the 20 audit findings
 
 | Finding | Fix | Targeted evidence |

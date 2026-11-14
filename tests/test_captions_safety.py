@@ -41,6 +41,83 @@ def test_description_chunks_preserve_text_and_unicode():
     assert all(len(c.encode("utf-16-le")) // 2 <= 4000 for c in chunks)
 
 
+def test_download_status_puts_progress_before_compact_media_context():
+    info = MediaInfo(
+        "yt",
+        "id",
+        "https://example.com/video",
+        "A title <with> characters",
+        uploader="Steve Brunton",
+        duration=1058,
+        subscribers=565000,
+        views=121734,
+        likes=2439,
+        comments=107,
+        category="Science & Technology",
+        upload_date="2022-01-28",
+        formats=[FormatOption("1080", "1080p", None, 1080)],
+    )
+    text = captions.status_caption(info, captions.progress_text(40, 100), "1080", "de-DE")
+    assert text.startswith("⬇️ <b>Downloading</b>")
+    assert text.index("40%") < text.index("A title")
+    assert "Steve Brunton · 1080p · DE-DE · 17:38" in text
+    assert "565,000" not in text and "121,734" not in text
+    assert "Science &amp; Technology" not in text and "2022-01-28" not in text
+    ET.fromstring("<root>" + text + "</root>")
+
+
+@pytest.mark.parametrize("total", [None, 0, -1])
+def test_preparing_download_has_useful_feedback_without_unknown_size_marker(total):
+    text = captions.progress_text(0, total)
+    assert "Preparing download" in text and "Waiting for the first bytes" in text
+    assert "?" not in text and "%" not in text
+
+
+def test_unknown_total_shows_real_received_bytes_without_invented_percentage():
+    text = captions.progress_text(2 * 1024 * 1024, None)
+    assert "<b>2.0MB</b> received" in text
+    assert "Total size not provided" in text
+    assert "?" not in text and "%" not in text and "<code>" not in text
+
+
+def test_unknown_gallery_total_uses_file_count_instead_of_bytes():
+    text = captions.progress_text(3, None, unit="files")
+    assert "<b>3</b> files downloaded" in text and "Total count" in text
+    assert "MB" not in text and "3B" not in text
+
+
+def test_known_total_starts_at_zero_without_question_mark():
+    text = captions.progress_text(0, 100)
+    assert "<b>0%</b>" in text and "<b>0B</b> / 100B" in text
+    assert "?" not in text
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        captions.QUEUED,
+        captions.progress_text(0, None),
+        captions.progress_text(40, 100),
+        captions.progress_text(100, None),
+        captions.UPLOADING,
+        captions.FAILED,
+    ],
+)
+def test_status_stages_keep_valid_html_and_caption_budget(stage):
+    info = MediaInfo(
+        "yt",
+        "id",
+        "https://example.com/video",
+        "😀<&>" * 400,
+        uploader="Creator <name>" * 100,
+        duration=1058,
+        formats=[FormatOption("720", "720p", None)],
+    )
+    text = captions.status_caption(info, stage, "720")
+    root = ET.fromstring("<root>" + text + "</root>")
+    assert len("".join(root.itertext()).encode("utf-16-le")) // 2 <= 1024
+
+
 def test_oversize_only_video_keeps_audio_choice(monkeypatch):
     info = MediaInfo(
         "yt",

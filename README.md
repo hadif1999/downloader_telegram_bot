@@ -12,6 +12,8 @@ UX reference: [docs/screenshots](docs/screenshots).
    MP3, 🖼 thumbnail and 📝 description.
 3. Videos with dubbed audio show a language picker (Original / DE-DE / ES-US / …).
 4. The card turns into "queued", then a live `▓▓▓░░░ 40%` progress bar.
+   Download status puts the current stage, percentage and received size first, followed by a compact
+   title/creator/format line. Sources without a known total show received bytes instead of a fake percentage.
 5. The video arrives with a "🎵 Download music from video" button. Each finished file's `file_id`
    is cached, so a repeat request is sent instantly.
 

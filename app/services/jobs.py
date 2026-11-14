@@ -100,14 +100,18 @@ async def request_download(
         if card is not None:
             if card.reply_markup is not None:
                 await card.edit_reply_markup(reply_markup=None)
-            text = captions.status_caption(info, captions.QUEUED)
+            text = captions.status_caption(info, captions.QUEUED, fmt, lang)
             if card.photo:
                 await card.edit_caption(caption=text)
             else:
                 await card.edit_text(text)
             status_id, is_caption = card.message_id, bool(card.photo)
         else:
-            status = await bot.send_message(chat_id, captions.QUEUED, reply_parameters=reply_params(reply_to))
+            status = await bot.send_message(
+                chat_id,
+                captions.status_caption(info, captions.QUEUED, fmt, lang),
+                reply_parameters=reply_params(reply_to),
+            )
             status_id, is_caption = status.message_id, False
         # Card edits or cached-send attempts may have taken time. Align the owned
         # queue lease with the message expiry immediately before publication.
@@ -142,7 +146,7 @@ async def request_download(
         if card is not None:
             with contextlib.suppress(Exception):
                 kb = formats_kb(info, get_settings().max_file_bytes)
-                text = captions.status_caption(info, captions.FAILED)
+                text = captions.status_caption(info, captions.FAILED, fmt, lang)
                 if card.photo:
                     await card.edit_caption(caption=text, reply_markup=kb)
                 else:
