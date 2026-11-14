@@ -20,6 +20,7 @@ from aiogram.exceptions import (
 from aiogram.types import (
     FSInputFile,
     InputFile,
+    InputMediaAudio,
     InputMediaPhoto,
     InputMediaVideo,
     Message,
@@ -189,7 +190,10 @@ async def send_gallery(
     reply_to: int | None = None,
     journal: Journal | None = None,
 ) -> list[Message]:
-    """files: [(media, "photo" | "video")]; sent as albums of up to 10, caption on the first item."""
+    """Photo/video or audio-only albums of up to 10, caption on the first item."""
+    kinds = {kind for _, kind in files}
+    if not kinds <= {"photo", "video", "audio"} or ("audio" in kinds and len(kinds) > 1):
+        raise ValueError("Audio albums cannot be mixed with photos or videos")
     if journal:
         await journal.prepare(len(files))
     sent: list[Message] = []
@@ -198,7 +202,7 @@ async def send_gallery(
         group = []
         for i, (media, kind) in enumerate(files[start : start + ALBUM_SIZE]):
             cap = caption if start == 0 and i == 0 else None
-            cls = InputMediaVideo if kind == "video" else InputMediaPhoto
+            cls = {"video": InputMediaVideo, "photo": InputMediaPhoto, "audio": InputMediaAudio}[kind]
             group.append(cls(media=media, caption=cap))
 
         async def send(group=group):
@@ -209,11 +213,12 @@ async def send_gallery(
                     "caption": item.caption,
                     "reply_parameters": reply_params(reply_to),
                 }
-                msg = (
-                    await bot.send_photo(photo=item.media, **common)
-                    if isinstance(item, InputMediaPhoto)
-                    else await bot.send_video(video=item.media, supports_streaming=True, **common)
-                )
+                if isinstance(item, InputMediaPhoto):
+                    msg = await bot.send_photo(photo=item.media, **common)
+                elif isinstance(item, InputMediaAudio):
+                    msg = await bot.send_audio(audio=item.media, **common)
+                else:
+                    msg = await bot.send_video(video=item.media, supports_streaming=True, **common)
                 return [msg]
             return await bot.send_media_group(chat_id, group, reply_parameters=reply_params(reply_to))
 
@@ -249,7 +254,7 @@ async def send_cached(
                 not isinstance(item, list)
                 or len(item) != 2
                 or not isinstance(item[0], str)
-                or item[0] not in {"photo", "video"}
+                or item[0] not in {"photo", "video", "audio"}
                 or not isinstance(item[1], str)
                 or not item[1]
                 for item in files

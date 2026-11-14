@@ -21,7 +21,7 @@ class AudioTrack:
 @dataclass
 class GalleryItem:
     url: str
-    type: str = "photo"  # "photo" | "video"
+    type: str = "photo"  # "photo" | "video" | "audio" (homogeneous audio albums)
 
 
 @dataclass
@@ -67,7 +67,7 @@ class MediaInfo:
 @dataclass
 class DownloadResult:
     path: str = ""
-    # gallery downloads: (local path, "photo" | "video") in post order
+    # collection downloads: (local path, "photo" | "video" | "audio") in source order
     files: list[tuple[str, str]] = field(default_factory=list)
     width: int | None = None
     height: int | None = None

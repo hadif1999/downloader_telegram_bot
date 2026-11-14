@@ -211,6 +211,8 @@ class YtDlpPlatform:
             with YoutubeDL({**self.ydl_opts(), "skip_download": True}) as ydl:
                 info = ydl.extract_info(url, download=False) or {}
             if info.get("_type") == "playlist":  # carousel / multi-video post
+                if playlist := self.playlist_info(info, url, media_id):
+                    return playlist
                 entries = [e for e in info.get("entries") or [] if e]
                 if self.gallery and len(entries) > 1 and (g := self._gallery(url, media_id)):
                     return g
@@ -222,6 +224,9 @@ class YtDlpPlatform:
         except DownloadError as e:
             error = e
         return self._fallbacks(url, media_id, error)
+
+    def playlist_info(self, info: dict, url: str, media_id: str) -> MediaInfo | None:
+        return None
 
     def _fallbacks(self, url: str, media_id: str, error: Exception | None) -> MediaInfo:
         if self.opengraph and not self.use_ytdlp and (o := self._opengraph(url, media_id)):

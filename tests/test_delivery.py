@@ -21,13 +21,11 @@ def bot():
     b = MagicMock()
     b.send_photo = AsyncMock(return_value=message())
     b.send_video = AsyncMock(return_value=message("video"))
+    b.send_audio = AsyncMock(return_value=message("audio"))
 
     async def album(chat_id, group, **kwargs):
         assert 2 <= len(group) <= 10
-        return [
-            message("video" if item.type == "video" else "photo", f"fid-{index}")
-            for index, item in enumerate(group)
-        ]
+        return [message(item.type, f"fid-{index}") for index, item in enumerate(group)]
 
     b.send_media_group = AsyncMock(side_effect=album)
     return b
@@ -48,19 +46,52 @@ def test_singleton_video_uses_video_method():
     b.send_media_group.assert_not_awaited()
 
 
-def test_partial_gallery_resumes_after_recorded_batch_without_duplicates(request_store):
+@pytest.mark.parametrize("count", [1, 2, 11])
+def test_cached_audio_album_is_journaled_and_can_be_replayed(count, request_store):
+    async def run():
+        import json
+
+        requests.create("audio", 10)
+        requests.claim("audio", 10, "owner")
+        journal = await delivery.Journal.load("audio", 10, "owner")
+        b = bot()
+        cached = json.dumps([["audio", f"track-{i}"] for i in range(count)])
+        await delivery.send_cached(b, 1, "all", cached, "caption", "scl", "set", "gallery", None, journal)
+        assert len(journal.sent) == count
+        assert all(kind == "audio" for kind, _ in journal.sent)
+        assert b.send_audio.await_count == int(count % 10 == 1)
+        assert b.send_media_group.await_count == count // 10 + int(count % 10 > 1)
+        b.reset_mock()
+        journal = await delivery.Journal.load("audio", 10, "owner")
+        await delivery.send_cached(b, 1, "all", cached, "caption", "scl", "set", "gallery", None, journal)
+        b.send_audio.assert_not_awaited()
+        b.send_media_group.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_mixed_audio_photo_album_is_rejected():
+    b = bot()
+    with pytest.raises(ValueError, match="cannot be mixed"):
+        asyncio.run(delivery.send_gallery(b, 1, [("a", "audio"), ("b", "photo")], "caption"))
+    b.send_media_group.assert_not_awaited()
+
+
+@pytest.mark.parametrize("kind", ["photo", "audio"])
+def test_partial_gallery_resumes_after_recorded_batch_without_duplicates(request_store, kind):
     async def run():
         requests.create("a", 10)
         requests.claim("a", 10, "owner")
-        prefix = [["photo", f"old-{i}"] for i in range(10)]
+        prefix = [[kind, f"old-{i}"] for i in range(10)]
         requests.transition("a", 10, "owner", "ready", prefix, 11)
         journal = await delivery.Journal.load("a", 10, "owner")
         b = bot()
-        await delivery.send_gallery(b, 1, [("file", "photo")] * 11, "caption", journal=journal)
+        await delivery.send_gallery(b, 1, [("file", kind)] * 11, "caption", journal=journal)
         assert len(journal.sent) == 11 and journal.sent[:10] == prefix
         b.send_media_group.assert_not_awaited()
-        b.send_photo.assert_awaited_once()
-        assert b.send_photo.call_args.kwargs["caption"] is None
+        send = b.send_audio if kind == "audio" else b.send_photo
+        send.assert_awaited_once()
+        assert send.call_args.kwargs["caption"] is None
 
     asyncio.run(run())
 

@@ -19,6 +19,9 @@ UX reference: [docs/screenshots](docs/screenshots).
 
 When there is nothing to choose (one quality, a photo post, a track), the download starts right away
 without the card. Photo posts and carousels arrive as Telegram albums.
+SoundCloud sets arrive as audio albums of up to ten tracks per batch (a final single track is sent
+individually). Empty, incomplete, or larger-than-50-track sets fail explicitly instead of silently
+dropping tracks. Each track retains the normal source and upload size limits.
 
 ## Platforms
 
@@ -33,7 +36,7 @@ without the card. Photo posts and carousels arrive as Telegram albums.
 | VK | yt-dlp (videos/clips), gallery-dl (wall photos) | |
 | Facebook | yt-dlp (videos/reels), gallery-dl (photos), OpenGraph | many posts need `cookies/facebook.txt` |
 | Threads | page's embedded post JSON (no library supports it) | videos, photos, carousels of public posts |
-| SoundCloud | yt-dlp | sent as MP3 with tags and artwork |
+| SoundCloud | yt-dlp | tracks and sets of up to 50 tracks, sent as MP3 with tags and artwork |
 | Spotify | track metadata from the page, audio matched on YouTube by duration | DRM: Spotify audio itself can't be downloaded. Single tracks only |
 
 Every platform lives in `app/platforms/`: generic yt-dlp sites are a few lines in `sites.py`

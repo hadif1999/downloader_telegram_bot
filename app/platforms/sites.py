@@ -1,6 +1,11 @@
 """Sites handled by yt-dlp, with gallery-dl / OpenGraph fallbacks for photo posts."""
 
-from app.platforms.ytdlp import YtDlpPlatform
+from pathlib import Path
+
+from app.config import get_settings
+from app.models import DownloadResult, GalleryItem
+from app.platforms.network import on_domains
+from app.platforms.ytdlp import TooLarge, UserError, YtDlpPlatform
 
 
 class Instagram(YtDlpPlatform):
@@ -71,3 +76,40 @@ class SoundCloud(YtDlpPlatform):
     name, title, emoji = "scl", "SoundCloud", "☁️"
     domains = ("soundcloud.com",)
     patterns = (r"(?:^|[/.])soundcloud\.com/",)
+
+    def ydl_opts(self):
+        return {**super().ydl_opts(), "noplaylist": False, "extract_flat": "in_playlist", "playlistend": 51}
+
+    def playlist_info(self, info, url, media_id):
+        entries = list(info.get("entries") or [])
+        if len(entries) > 50:
+            raise UserError("SoundCloud sets support up to 50 tracks. Please send individual track links.")
+        if not entries:
+            raise UserError("No downloadable tracks found in this SoundCloud set.")
+        items = []
+        for entry in entries:
+            track_url = (entry or {}).get("webpage_url") or (entry or {}).get("url")
+            if not track_url or not on_domains(track_url, self.domains):
+                raise UserError("Couldn't read every track in this SoundCloud set. Please try again later.")
+            items.append(GalleryItem(track_url, "audio"))
+        result = self.to_media_info(info, url, media_id)
+        result.kind, result.items, result.formats = "gallery", items, []
+        return result
+
+    def download(self, info, fmt, lang, dest, progress):
+        if info.kind != "gallery":
+            return super().download(info, fmt, lang, dest, progress)
+        files = []
+        for index, item in enumerate(info.items):
+            progress(index, len(info.items))
+            track = self.extract(item.url)
+            if track.kind != "audio":
+                raise UserError("A track in this SoundCloud set is no longer available.")
+            track_dest = dest / str(index)
+            track_dest.mkdir(parents=True, exist_ok=True)
+            result = self.download_url(item.url, track, "mp3", None, track_dest, lambda *_: None)
+            if Path(result.path).stat().st_size > get_settings().max_file_bytes:
+                raise TooLarge(track.id)
+            files.append((result.path, "audio"))
+        progress(len(files), len(files))
+        return DownloadResult(files=files)

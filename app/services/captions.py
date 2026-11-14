@@ -90,6 +90,8 @@ def _num(n: int | None) -> str:
 
 def info_header(info: MediaInfo) -> str:
     icon = {"audio": "🎵", "gallery": "🖼"}.get(info.kind, "📹")
+    if info.items and all(i.type == "audio" for i in info.items):
+        icon = "🎵"
     lines = [f"{icon} {_link(_short(info.title, 200), info.url)}"]
     if info.uploader:
         who = escape(_short(info.uploader, 100))
@@ -119,9 +121,11 @@ def format_list(info: MediaInfo, max_bytes: int) -> str:
 
 def gallery_summary(info: MediaInfo) -> str:
     photos = sum(i.type == "photo" for i in info.items)
-    videos = len(info.items) - photos
+    videos = sum(i.type == "video" for i in info.items)
+    tracks = sum(i.type == "audio" for i in info.items)
     parts = [f"🖼 {photos} photo{'s' * (photos != 1)}"] if photos else []
     parts += [f"🎬 {videos} video{'s' * (videos != 1)}"] if videos else []
+    parts += [f"🎵 {tracks} track{'s' * (tracks != 1)}"] if tracks else []
     return " · ".join(parts)
 
 
