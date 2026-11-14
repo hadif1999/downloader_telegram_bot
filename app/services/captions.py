@@ -2,11 +2,68 @@
 
 from __future__ import annotations
 
-from html import escape
+import re
+from html import escape, unescape
+from urllib.parse import urlsplit
 
 from app.models import MediaInfo
 
 CAPTION_LIMIT = 1024  # Telegram media caption limit
+
+
+def text_chunks(text: str, limit: int = 4000):
+    """Telegram entities use UTF-16 offsets; never split a character or escaped entity."""
+    chunk, size = [], 0
+    for char in text:
+        width = 2 if ord(char) > 0xFFFF else 1
+        if size + width > limit:
+            yield "".join(chunk)
+            chunk, size = [], 0
+        chunk.append(char)
+        size += width
+    if chunk:
+        yield "".join(chunk)
+
+
+def _short(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    if len(text.encode("utf-16-le")) <= limit * 2:
+        return text
+    return next(text_chunks(text, limit - 1)) + "…"
+
+
+def _link(text: str, url: str | None) -> str:
+    try:
+        if (
+            url
+            and len(url) <= 2048
+            and not any(ord(c) < 33 for c in url)
+            and urlsplit(url).scheme in {"http", "https"}
+        ):
+            return f'<a href="{escape(url)}">{escape(text)}</a>'
+    except ValueError:
+        pass
+    return escape(text)
+
+
+def _units(html: str) -> int:
+    return len(unescape(re.sub(r"<[^>]*>", "", html)).encode("utf-16-le")) // 2
+
+
+def _caption(info: MediaInfo, suffix: str) -> str:
+    # Keep complete HTML lines and reserve room for the status/actions. Never slice markup.
+    tail = []
+    for line in suffix.splitlines():
+        if _units("\n".join([*tail, line])) > CAPTION_LIMIT // 2:
+            break
+        tail.append(line)
+    suffix = "\n".join(tail)
+    budget = CAPTION_LIMIT - _units(suffix) - 2
+    head = []
+    for line in info_header(info).splitlines():
+        if _units("\n".join([*head, line])) <= budget:
+            head.append(line)
+    return "\n".join(head) + (f"\n\n{suffix}" if suffix else "")
 
 
 def human_size(n: int | None) -> str:
@@ -33,11 +90,11 @@ def _num(n: int | None) -> str:
 
 def info_header(info: MediaInfo) -> str:
     icon = {"audio": "🎵", "gallery": "🖼"}.get(info.kind, "📹")
-    lines = [f'{icon} <a href="{escape(info.url)}">{escape(info.title)}</a>']
+    lines = [f"{icon} {_link(_short(info.title, 200), info.url)}"]
     if info.uploader:
-        who = escape(info.uploader)
+        who = escape(_short(info.uploader, 100))
         if info.uploader_handle and info.uploader_url:
-            who += f' <a href="{escape(info.uploader_url)}">{escape(info.uploader_handle)}</a>'
+            who += " " + _link(_short(info.uploader_handle, 60), info.uploader_url)
         lines.append(f"👤 {who}")
     if info.subscribers is not None:
         lines.append(f"👥 {_num(info.subscribers)}")
@@ -46,9 +103,9 @@ def info_header(info: MediaInfo) -> str:
     if info.views is not None:
         lines.append(f"👁 {_num(info.views)} | 👍 {_num(info.likes)} | 💬 {_num(info.comments)}")
     if info.category:
-        lines.append(f"🏷 {escape(info.category)}")
+        lines.append(f"🏷 {escape(_short(info.category, 80))}")
     if info.upload_date:
-        lines.append(f"📅 {info.upload_date}")
+        lines.append(f"📅 {escape(_short(info.upload_date, 32))}")
     return "\n".join(lines)
 
 
@@ -56,7 +113,7 @@ def format_list(info: MediaInfo, max_bytes: int) -> str:
     rows = []
     for f in info.formats:
         ok = f.size is None or f.size <= max_bytes
-        rows.append(f"{'✅' if ok else '❌'} {f.label} - {human_size(f.size)}")
+        rows.append(f"{'✅' if ok else '❌'} {escape(_short(f.label, 40))} - {human_size(f.size)}")
     return "\n".join(rows)
 
 
@@ -70,12 +127,11 @@ def gallery_summary(info: MediaInfo) -> str:
 
 def info_caption(info: MediaInfo, max_bytes: int) -> str:
     body = gallery_summary(info) if info.kind == "gallery" else format_list(info, max_bytes)
-    text = f"{info_header(info)}\n\n{body}\n\nFormats for download ⤵️"
-    return text if len(text) <= CAPTION_LIMIT else info_header(info)[:CAPTION_LIMIT]
+    return _caption(info, f"{body}\n\nFormats for download ⤵️")
 
 
 def status_caption(info: MediaInfo, status: str) -> str:
-    return f"{info_header(info)}\n\n{status}"
+    return _caption(info, status)
 
 
 QUEUED = "🕐 The selected format has been added to the download queue. Please wait…"
@@ -94,6 +150,8 @@ BUSY = "⏳ You already have a download in progress. Please wait until it finish
 EXPIRED = "⌛ This request has expired, please send the link again."
 FAILED = "⚠️ Download failed. Please try again later or pick another format."
 TOO_BIG = "❌ This format is larger than the upload limit."
+UNAVAILABLE = "⚠️ This format or audio language is no longer available. Please send the link again."
+UNCERTAIN = "⚠️ Delivery could not be confirmed. Please check the chat before requesting it again."
 
 
 def progress_text(done: int, total: int | None, cells: int = 10, unit: str = "bytes") -> str:
@@ -107,7 +165,7 @@ def progress_text(done: int, total: int | None, cells: int = 10, unit: str = "by
 
 
 def result_caption(info: MediaInfo, bot_username: str) -> str:
-    return f"{info_header(info)}\n\nDownloaded by @{escape(bot_username)} 🤖"
+    return _caption(info, f"Downloaded by @{escape(_short(bot_username, 64))} 🤖")
 
 
 def welcome(platforms, bot_username: str) -> str:

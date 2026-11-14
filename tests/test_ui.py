@@ -19,7 +19,7 @@ def test_caption_contents():
     text = captions.info_caption(INFO, MAX)
     assert "👤 Steve Brunton" in text and "@Eigensteve" in text
     assert "⏱ 26:02" in text or "⏱ 26:03" in text
-    assert "✅ 1080p - 125.6MB" in text and "✅ MP3 - 24.1MB" in text
+    assert "✅ 1080p - 125.6MB" in text and "✅ MP3 - 35.8MB" in text
     assert len(text) <= captions.CAPTION_LIMIT
 
 

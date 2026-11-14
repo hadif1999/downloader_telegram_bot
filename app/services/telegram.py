@@ -9,12 +9,12 @@ from app.config import get_settings
 
 def make_bot() -> Bot:
     s = get_settings()
-    session = None
+    options = {"timeout": min(60 * 30, s.task_time_limit - 60)}
     if s.bot_api_url:
         server = TelegramAPIServer.from_base(s.bot_api_url, is_local=s.bot_api_local)
-        session = AiohttpSession(api=server, timeout=60 * 30)  # large uploads take a while
+        options["api"] = server
     return Bot(
         s.bot_token,
-        session=session,
+        session=AiohttpSession(**options),
         default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True),
     )

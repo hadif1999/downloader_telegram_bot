@@ -11,6 +11,8 @@ celery.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     task_ignore_result=True,
+    task_publish_retry=False,
+    broker_connection_timeout=5,
     task_time_limit=s.task_time_limit,
     task_soft_time_limit=s.task_time_limit - 60,
     # must exceed the longest task, otherwise Redis redelivers running tasks

@@ -5,11 +5,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from yt_dlp import YoutubeDL
-
 from app.models import DownloadResult, FormatOption, MediaInfo
 from app.platforms.base import ProgressCb
 from app.platforms.common import CRAWLER_UA, download_file, fetch, og_tags, url_key
+from app.platforms.downloader import YoutubeDL
+from app.platforms.network import on_domains
 from app.platforms.youtube import YouTube
 from app.platforms.ytdlp import UserError, YtDlpPlatform
 
@@ -70,6 +70,8 @@ class Spotify(YtDlpPlatform):
         self._yt = YouTube()
 
     def match(self, url: str) -> str | None:
+        if not on_domains(url, ("open.spotify.com", "spotify.link")):
+            return None
         if m := LINK_RE.search(url):
             return m.group(2)
         return url_key(url) if SHORT_RE.search(url) else None  # spotify.link short link
@@ -77,7 +79,7 @@ class Spotify(YtDlpPlatform):
     def extract(self, url: str) -> MediaInfo:
         final, page = fetch(url, {"User-Agent": CRAWLER_UA})
         m = LINK_RE.search(final)
-        if not m or m.group(1) != "track":
+        if not on_domains(final, ("open.spotify.com",)) or not m or m.group(1) != "track":
             raise UserError("Only single Spotify tracks are supported (not albums or playlists).")
         meta = parse_track(og_tags(page))
         if not meta["title"]:

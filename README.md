@@ -53,6 +53,15 @@ Telegram ⇄ telegram-bot-api (local server, 2 GB uploads)
 | `app/platforms/` | `Platform` protocol, registry, generic `ytdlp.py`, `gallery.py`, site modules |
 | `app/services/` | captions/texts, keyboards, Redis cache and locks, Telegram helpers |
 
+Queue ownership and delivery progress are recorded in Redis (`app/services/requests.py`).
+Queued jobs expire after `QUEUE_TTL` seconds (default: one day). Active jobs renew their owned
+leases, and completed gallery batches are checkpointed so worker redelivery can resume without
+resending those batches. Keep Redis persistent; Compose enables AOF with `appendfsync always`.
+
+Telegram rate-limit responses and confirmed connection failures get bounded upload retries.
+An upload whose response was lost is marked **delivery uncertain**, and is not automatically resent.
+Check the chat before requesting it again. Redis and Telegram cannot provide one atomic transaction.
+
 **Parallelism:** `MAX_PARALLEL_DOWNLOADS` sets the Celery worker concurrency. Extra jobs wait in Redis.
 Each user can have one active download at a time. To scale out, run more worker containers
 (`docker compose up --scale worker=3`): total parallelism is then workers × concurrency.
@@ -72,6 +81,14 @@ bot") only serve logged-in users. Export cookies from a browser in Netscape form
 "Get cookies.txt LOCALLY" extension) and save them as `cookies/<site>.txt`, e.g. `cookies/instagram.txt`,
 `cookies/facebook.txt`, `cookies/youtube.txt`. They are used automatically by both yt-dlp and gallery-dl.
 Use throwaway accounts.
+The mounted originals stay read-only. Each yt-dlp/gallery-dl operation uses and removes a private
+writable cookie copy, so simultaneous requests cannot overwrite your exported cookies.
+
+**Network access.** Platform links must use supported hostnames and HTTP(S) on ports 80/443.
+Page/media connections reject private and reserved destination addresses, including after redirects.
+Media clients do not use environment HTTP proxies, which could bypass these destination checks;
+network-layer routing/VPNs remain usable. Only the configured PO-token provider's `GET /ping` and
+`POST /get_pot` endpoints are allowed as trusted internal yt-dlp requests.
 
 ### Without the local Bot API server
 Set `BOT_API_URL=` (empty), `BOT_API_LOCAL=false`, `MAX_FILE_MB=50`. Files are then uploaded over HTTP
@@ -142,3 +159,19 @@ uv run celery -A app.worker.celery_app worker --concurrency=2 -l INFO
 
 Keep the extractors up to date: `uv lock --upgrade-package yt-dlp --upgrade-package gallery-dl`.
 Sites change often.
+
+### Updating an existing installation
+
+Pause incoming requests and let the old workers drain before replacing bot and worker together;
+do not mix old and new worker versions. Then recreate the affected services:
+`docker compose up -d --build redis bot worker`.
+Old queued requests without a delivery journal receive an expired-request message and must be
+submitted again. Legacy file-ID cache keys are ignored because they did not record bot ownership.
+Source URLs and metadata keep their existing cache lifetimes.
+
+`MAX_FILE_MB` caps finished uploads. `MAX_SOURCE_MB` (default: 4096) separately caps input bytes for
+MP3 conversion, since a large source may encode into a small MP3. Displayed MP3 sizes estimate the
+192 kbps encoded output; completed files are checked again before upload. Cached Telegram files can
+be resent without uploading, even when they exceed the current upload cap.
+
+See [docs/RELIABILITY.md](docs/RELIABILITY.md) for the audit fixes, recovery limits and targeted checks.

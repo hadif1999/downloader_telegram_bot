@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from app.models import FormatOption, GalleryItem, MediaInfo
 from app.platforms.common import BROWSER_HEADERS, fetch
+from app.platforms.network import on_domains
 from app.platforms.ytdlp import UserError, YtDlpPlatform
 
 POST_RE = re.compile(r"threads\.(?:net|com)/(?:@[\w.]+/post|t)/([\w-]+)", re.I)
@@ -81,6 +82,8 @@ class Threads(YtDlpPlatform):
     name, title, emoji = "th", "Threads", "🧵"
 
     def match(self, url: str) -> str | None:
+        if not on_domains(url, ("threads.net", "threads.com")):
+            return None
         m = POST_RE.search(url)
         return m.group(1) if m else None
 

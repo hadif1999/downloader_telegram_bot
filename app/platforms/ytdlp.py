@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from yt_dlp import YoutubeDL
 from yt_dlp.plugins import load_all_plugins
 from yt_dlp.utils import DownloadError
 
@@ -26,6 +25,8 @@ from app.platforms.common import (
     og_tags,
     url_key,
 )
+from app.platforms.downloader import YoutubeDL
+from app.platforms.network import on_domains
 
 # Load yt-dlp plugins (bgutil PO-token provider) once, in the main thread: importing them lazily
 # from several worker threads at the same time races and breaks the plugin registry.
@@ -90,6 +91,11 @@ def _best_audio_size(formats: list[dict], duration: float | None) -> int | None:
     return max(sizes) if sizes else None
 
 
+def mp3_size(duration: float | None) -> int | None:
+    # Output is encoded at 192 kbps; source codec/bitrate is unrelated to this size.
+    return int(duration * 24_000) + 65_536 if duration else None
+
+
 def build_formats(info: dict) -> tuple[str, list[FormatOption]]:
     """-> (kind, options). Video resolutions (largest first) plus MP3."""
     formats = info.get("formats") or [info]
@@ -97,7 +103,7 @@ def build_formats(info: dict) -> tuple[str, list[FormatOption]]:
     audio_size = _best_audio_size(formats, duration)
     video = [f for f in formats if _has_video(f)]
     if not video:
-        return "audio", [FormatOption("mp3", "MP3", audio_size or _size(formats[-1], duration))]
+        return "audio", [FormatOption("mp3", "MP3", mp3_size(duration))]
 
     groups: dict[int, list[dict]] = {}
     for f in video:
@@ -114,18 +120,16 @@ def build_formats(info: dict) -> tuple[str, list[FormatOption]]:
         out.append(FormatOption(str(q), f"{q}p", max(sizes) if sizes else None, max(f["height"] for f in fs)))
     if not out:  # no resolution info at all
         out.append(FormatOption("best", "Video", _size(video[-1], duration)))
-    out.append(FormatOption("mp3", "MP3", audio_size))
+    out.append(FormatOption("mp3", "MP3", mp3_size(duration)))
     return "video", out
 
 
 def format_selector(height: int | None, lang: str | None = None, audio: bool = False) -> str:
     lang_f = f"[language={lang}]" if lang else ""
     if audio:
-        return f"ba[ext=m4a]{lang_f}/ba{lang_f}/ba/b"
+        return f"ba[ext=m4a]{lang_f}/ba{lang_f}/b{lang_f}"
     h = f"[height<={height}]" if height else ""
-    return (
-        f"bv*{h}[ext=mp4]+ba[ext=m4a]{lang_f}/bv*{h}+ba{lang_f}/bv*{h}[ext=mp4]+ba[ext=m4a]/bv*{h}+ba/b{h}/b"
-    )
+    return f"bv*{h}[ext=mp4]+ba[ext=m4a]{lang_f}/bv*{h}+ba{lang_f}/b{h}{lang_f}"
 
 
 def to_date(info: dict) -> str | None:
@@ -163,6 +167,7 @@ class YtDlpPlatform:
     title = "Generic"
     emoji = "🌐"
     patterns: tuple[str, ...] = ()
+    domains: tuple[str, ...] = ()
     gallery = False  # photo posts / carousels through gallery-dl
     opengraph = False  # last resort: og:video / og:image of the page
     use_ytdlp = True  # False when yt-dlp's extractor for the site is known to be broken
@@ -172,7 +177,9 @@ class YtDlpPlatform:
 
     # --- identity
     def match(self, url: str) -> str | None:
-        return url_key(url) if any(r.search(url) for r in self._res) else None
+        return (
+            url_key(url) if on_domains(url, self.domains) and any(r.search(url) for r in self._res) else None
+        )
 
     def url_for(self, media_id: str) -> str | None:
         return None  # resolved from the cached source url
@@ -194,7 +201,9 @@ class YtDlpPlatform:
 
     # --- extraction
     def extract(self, url: str) -> MediaInfo:
-        media_id = self.match(url) or url_key(url)
+        media_id = self.match(url)
+        if not media_id:
+            raise UserError("This URL does not belong to the selected platform.")
         error: Exception | None = None
         if not self.use_ytdlp:
             return self._fallbacks(url, media_id, None)
@@ -205,6 +214,8 @@ class YtDlpPlatform:
                 entries = [e for e in info.get("entries") or [] if e]
                 if self.gallery and len(entries) > 1 and (g := self._gallery(url, media_id)):
                     return g
+                if len(entries) > 1:
+                    raise UserError("Couldn't read every item in this post. Please try again later.")
                 info = {**info, **entries[0]} if entries else info
             if info.get("formats") or info.get("url"):
                 return self.to_media_info(info, url, media_id)
@@ -295,7 +306,13 @@ class YtDlpPlatform:
     ) -> DownloadResult:
         """Direct CDN links (OpenGraph, Threads): plain HTTP; yt-dlp rejects odd extensions."""
         dest.mkdir(parents=True, exist_ok=True)
-        video = download_file(url, dest / "media.mp4", referer=info.url, progress=progress)
+        video = download_file(
+            url,
+            dest / "media.mp4",
+            referer=info.url,
+            progress=progress,
+            max_bytes=get_settings().max_source_bytes if fmt == "mp3" else get_settings().max_file_bytes,
+        )
         result = DownloadResult(
             path=str(video), duration=info.duration, title=info.title, performer=info.uploader
         )
@@ -310,13 +327,15 @@ class YtDlpPlatform:
         self, source: str, info: MediaInfo, fmt: str, lang: str | None, dest: Path, progress: ProgressCb
     ) -> DownloadResult:
         fo = info.format(fmt)
+        if fo is None:
+            raise UserError("This format is no longer available. Please send the link again.")
         audio = fmt == "mp3"
         opts: dict[str, Any] = {
             **self.ydl_opts(),
             "outtmpl": str(dest / "media.%(ext)s"),
             "format": format_selector(fo.height if fo and not audio else None, lang, audio),
             "progress_hooks": [Progress(progress, fo.size if fo else None)],
-            "max_filesize": get_settings().max_file_bytes,
+            "max_filesize": get_settings().max_source_bytes if audio else get_settings().max_file_bytes,
         }
         if audio:
             opts |= {
@@ -329,6 +348,13 @@ class YtDlpPlatform:
             }
         else:
             opts |= {"merge_output_format": "mp4", "format_sort": ["res", "vcodec:h264", "acodec:aac"]}
+            if lang:
+                # Keep the chosen audio even when bv* is a progressive video. The merger must
+                # discard embedded audio from input 0 rather than silently dropping input 1.
+                opts |= {
+                    "allow_multiple_audio_streams": True,
+                    "postprocessor_args": {"merger+ffmpeg_o": ["-map", "-0:a?"]},
+                }
         with YoutubeDL(opts) as ydl:
             r = ydl.extract_info(source, download=True) or {}
         if r.get("_type") == "playlist":

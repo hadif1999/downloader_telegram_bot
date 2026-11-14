@@ -6,6 +6,8 @@ import json
 from functools import lru_cache
 
 import redis
+from redis.backoff import NoBackoff
+from redis.retry import Retry
 
 from app.config import get_settings
 from app.models import MediaInfo
@@ -15,11 +17,22 @@ SRC_TTL = 30 * 24 * 3600
 
 @lru_cache
 def client() -> redis.Redis:
-    return redis.Redis.from_url(get_settings().redis_url, decode_responses=True)
+    return redis.Redis.from_url(
+        get_settings().redis_url,
+        decode_responses=True,
+        socket_connect_timeout=3,
+        socket_timeout=5,
+        retry_on_timeout=False,
+        retry=Retry(NoBackoff(), 0),
+    )
+
+
+def namespace() -> str:
+    return get_settings().bot_token.split(":", 1)[0]
 
 
 def _fid_key(platform: str, media_id: str, fmt: str, lang: str | None) -> str:
-    return f"fid:{platform}:{media_id}:{fmt}:{lang or 'orig'}"
+    return f"fid:{namespace()}:{platform}:{media_id}:{fmt}:{lang or 'orig'}"
 
 
 def save_info(info: MediaInfo) -> None:
@@ -48,9 +61,5 @@ def get_file_id(platform: str, media_id: str, fmt: str, lang: str | None) -> str
     return client().get(_fid_key(platform, media_id, fmt, lang))
 
 
-def acquire_user_lock(user_id: int) -> bool:
-    return bool(client().set(f"lock:user:{user_id}", "1", nx=True, ex=get_settings().task_time_limit))
-
-
-def release_user_lock(user_id: int) -> None:
-    client().delete(f"lock:user:{user_id}")
+def delete_file_id(platform: str, media_id: str, fmt: str, lang: str | None) -> None:
+    client().delete(_fid_key(platform, media_id, fmt, lang))

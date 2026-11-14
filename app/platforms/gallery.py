@@ -8,11 +8,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from yt_dlp import YoutubeDL
-
 from app.models import DownloadResult, GalleryItem, MediaInfo
 from app.platforms.base import ProgressCb
 from app.platforms.common import download_file, guess_ext
+from app.platforms.downloader import YoutubeDL, writable_cookies
 
 VIDEO_EXT = {"mp4", "mov", "webm", "m4v"}
 PHOTO_EXT = {"jpg", "jpeg", "png"}  # what Telegram accepts as a photo; others are converted
@@ -38,10 +37,11 @@ def parse_dump(raw: str) -> tuple[dict, list[GalleryItem]]:
 
 
 def extract(url: str, cookies: Path | None = None, timeout: int = 60) -> tuple[dict, list[GalleryItem]]:
-    cmd = [sys.executable, "-m", "gallery_dl", "-j", "--range", f"1-{MAX_ITEMS}"]
-    if cookies:
-        cmd += ["--cookies", str(cookies)]
-    out = subprocess.run([*cmd, url], capture_output=True, text=True, timeout=timeout)
+    cmd = [sys.executable, "-m", "app.platforms.gallery_cli", "-j", "--range", f"1-{MAX_ITEMS}"]
+    with writable_cookies(cookies) as copy:
+        if copy:
+            cmd += ["--cookies", str(copy)]
+        out = subprocess.run([*cmd, url], capture_output=True, text=True, timeout=timeout, check=True)
     return parse_dump(out.stdout)
 
 
@@ -78,7 +78,9 @@ def to_media_info(
 def _to_jpeg(path: Path) -> Path:
     out = path.with_suffix(".jpg")
     subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(path), "-q:v", "2", str(out)], check=True, timeout=60
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(path), "-frames:v", "1", "-q:v", "2", str(out)],
+        check=True,
+        timeout=60,
     )
     path.unlink(missing_ok=True)
     return out

@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 router = Router(name="links")
 
 # limit concurrent metadata extractions inside the bot process
-_extract_sem = asyncio.Semaphore(4)
+_extract_sem = media.extraction_slots
 
 
 async def send_info_card(message: Message, info: MediaInfo) -> None:
@@ -31,9 +31,10 @@ async def send_info_card(message: Message, info: MediaInfo) -> None:
     kb = formats_kb(info, max_bytes)
     if info.thumbnail:
         try:
-            await message.edit_media(InputMediaPhoto(media=info.thumbnail, caption=caption), reply_markup=kb)
+            async with media.thumbnail_file(info.thumbnail) as thumbnail:
+                await message.edit_media(InputMediaPhoto(media=thumbnail, caption=caption), reply_markup=kb)
             return
-        except TelegramBadRequest:
+        except (TelegramBadRequest, OSError, ValueError):
             log.warning("thumbnail rejected: %s", info.thumbnail)
     await message.edit_text(caption, reply_markup=kb)
 
@@ -60,6 +61,8 @@ async def on_link(message: Message) -> None:
             await message.reply("🔗 Send me a link to a video, photo or track.")
         return
     platform, media_id, url = found
+    if message.from_user is None:
+        return
     status = await message.reply(captions.EXTRACT_WAITING)
     try:
         async with _extract_sem:

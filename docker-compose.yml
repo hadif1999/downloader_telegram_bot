@@ -13,7 +13,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: redis-server --appendonly yes
+    # Delivery intent must survive a Redis crash before Telegram is called.
+    command: redis-server --appendonly yes --appendfsync always
     volumes: [redis-data:/data]
 
   telegram-bot-api:

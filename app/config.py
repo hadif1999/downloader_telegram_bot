@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,9 +28,11 @@ class Settings(BaseSettings):
     bot_api_local: bool = True
 
     redis_url: str = "redis://redis:6379/0"
-    max_parallel_downloads: int = 2
-    max_file_mb: int = 2000
-    task_time_limit: int = 60 * 60
+    max_parallel_downloads: int = Field(default=2, ge=1)
+    max_file_mb: int = Field(default=2000, ge=1, le=2000)
+    max_source_mb: int = Field(default=4096, ge=1)
+    task_time_limit: int = Field(default=60 * 60, ge=120, le=24 * 3600)
+    queue_ttl: int = Field(default=24 * 3600, ge=60, le=7 * 24 * 3600)
     download_dir: Path = Path("/downloads")
 
     # Netscape cookie files named <platform>.txt (youtube.txt, instagram.txt, facebook.txt, ...)
@@ -42,6 +45,10 @@ class Settings(BaseSettings):
     @property
     def max_file_bytes(self) -> int:
         return self.max_file_mb * 1024 * 1024
+
+    @property
+    def max_source_bytes(self) -> int:
+        return self.max_source_mb * 1024 * 1024
 
 
 @lru_cache

@@ -137,7 +137,7 @@ def test_build_formats_progressive_single_quality():
     kind, fmts = build_formats(info)
     assert kind == "video" and [(f.key, f.size) for f in fmts] == [
         ("480", 2_000_000),
-        ("mp3", None),
+        ("mp3", 10 * 24_000 + 65_536),
     ]  # nearest standard size
 
 

@@ -9,6 +9,7 @@ from typing import Any
 from app.config import get_settings
 from app.models import AudioTrack, MediaInfo
 from app.platforms.common import cookie_file
+from app.platforms.network import on_domains, open_url
 from app.platforms.ytdlp import YtDlpPlatform, audio_formats, is_original_audio
 
 ID_RE = re.compile(
@@ -36,15 +37,16 @@ def build_audio_tracks(info: dict) -> list[AudioTrack]:
 def _url_ok(url: str) -> bool:
     try:
         req = urllib.request.Request(url, method="HEAD")
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with open_url(req, timeout=5) as r:
             return r.status == 200
     except Exception:
         return False
 
 
-def best_thumbnail(info: dict, check=_url_ok) -> str | None:
+def best_thumbnail(info: dict, check=None) -> str | None:
     """Best JPEG thumbnail that actually exists (yt-dlp lists unverified ones; maxres often 404s,
     and Telegram can't always fetch webp by URL). hqdefault.jpg always exists."""
+    check = check or _url_ok
     thumbs = [t for t in info.get("thumbnails") or [] if ".jpg" in (t.get("url") or "")]
     thumbs.sort(key=lambda t: (t.get("preference") or 0, t.get("width") or 0), reverse=True)
     for t in thumbs[:3]:
@@ -59,6 +61,8 @@ class YouTube(YtDlpPlatform):
     emoji = "▶️"
 
     def match(self, url: str) -> str | None:
+        if not on_domains(url, ("youtube.com", "youtu.be")):
+            return None
         m = ID_RE.search(url)
         return m.group(1) if m else None
 

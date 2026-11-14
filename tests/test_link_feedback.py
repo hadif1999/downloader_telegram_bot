@@ -140,35 +140,40 @@ def test_slow_extraction_reports_elapsed_time(monkeypatch):
 
 
 @pytest.mark.parametrize("thumbnail_rejected", [False, True])
-def test_status_becomes_photo_card_or_text_fallback(monkeypatch, thumbnail_rejected):
+def test_status_becomes_photo_card_or_text_fallback(monkeypatch, thumbnail_rejected, tmp_path):
     status = MagicMock()
     status.edit_media = AsyncMock()
     status.edit_text = AsyncMock()
     if thumbnail_rejected:
         status.edit_media.side_effect = TelegramBadRequest(method=MagicMock(), message="Bad thumbnail")
     info = MediaInfo("yt", "id", "url", "Title", thumbnail="https://example.com/thumb.jpg")
+
+    def download(url, path, **kwargs):
+        path.write_bytes(b"thumbnail")
+        return path
+
+    monkeypatch.setattr(links.media, "download_file", download)
     asyncio.run(links.send_info_card(status, info))
     status.edit_media.assert_awaited_once()
     assert status.edit_text.await_count == int(thumbnail_rejected)
 
 
-def test_text_status_without_buttons_can_be_queued(monkeypatch):
+def test_text_status_without_buttons_can_be_queued(monkeypatch, request_store):
     bot = MagicMock()
     bot.me = AsyncMock(return_value=SimpleNamespace(username="bot"))
     card = MagicMock(message_id=20, reply_markup=None, photo=[])
     card.edit_reply_markup = AsyncMock(side_effect=AssertionError("No markup to remove"))
     card.edit_text = AsyncMock()
     monkeypatch.setattr(jobs.cache, "get_file_id", lambda *args: None)
-    monkeypatch.setattr(jobs.cache, "acquire_user_lock", lambda _: True)
     enqueue = MagicMock()
-    monkeypatch.setattr(tasks.download_media, "delay", enqueue)
-    info = MediaInfo("yt", "id", "url", "Title")
+    monkeypatch.setattr(tasks.download_media, "apply_async", enqueue)
+    info = MediaInfo("yt", "id", "url", "Title", formats=[FormatOption("720", "720p", None)])
     assert asyncio.run(jobs.request_download(bot, info, "720", None, chat_id=1, user_id=2, card=card)) is None
     enqueue.assert_called_once()
     card.edit_reply_markup.assert_not_awaited()
 
 
-def test_cached_download_removes_pending_status(monkeypatch):
+def test_cached_download_removes_pending_status(monkeypatch, request_store):
     bot = MagicMock()
     bot.me = AsyncMock(return_value=SimpleNamespace(username="bot"))
     card = MagicMock()
@@ -176,7 +181,7 @@ def test_cached_download_removes_pending_status(monkeypatch):
     monkeypatch.setattr(jobs.cache, "get_file_id", lambda *args: "cached-id")
     send = AsyncMock()
     monkeypatch.setattr(jobs, "send_cached", send)
-    info = MediaInfo("yt", "id", "url", "Title")
+    info = MediaInfo("yt", "id", "url", "Title", formats=[FormatOption("720", "720p", None)])
     asyncio.run(jobs.request_download(bot, info, "720", None, chat_id=1, user_id=2, card=card))
     send.assert_awaited_once()
     card.delete.assert_awaited_once()

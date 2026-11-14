@@ -44,7 +44,7 @@ def test_media_info_matches_reference():
     assert keys[-1] == "mp3"
     assert [k for k in keys if k.isdigit()][-6:] == ["1080", "720", "480", "360", "240", "144"]
     mib = {f.key: round(f.size / 2**20, 1) for f in info.formats}
-    assert mib["1080"] == 125.6 and mib["mp3"] == 24.1  # same numbers as the reference screenshot
+    assert mib["1080"] == 125.6 and mib["mp3"] == 35.8  # MP3 reflects the encoded 192 kbps output
 
 
 def test_audio_tracks():

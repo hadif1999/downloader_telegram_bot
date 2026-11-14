@@ -10,6 +10,7 @@ import urllib.request
 from pathlib import Path
 
 from app.config import get_settings
+from app.platforms.network import open_url
 
 BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -50,8 +51,11 @@ def url_key(url: str) -> str:
 def fetch(url: str, headers: dict | None = None, timeout: int = 20) -> tuple[str, str]:
     """GET a page -> (final url, text)."""
     req = urllib.request.Request(url, headers=headers or BROWSER_HEADERS)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.geturl(), r.read().decode("utf-8", "replace")
+    with open_url(req, timeout=timeout) as r:
+        page = r.read(8 * 1024 * 1024 + 1)
+        if len(page) > 8 * 1024 * 1024:
+            raise ValueError("Platform page is too large.")
+        return r.geturl(), page.decode("utf-8", "replace")
 
 
 def og_tags(page: str) -> dict[str, str]:
@@ -66,15 +70,20 @@ def og_tags(page: str) -> dict[str, str]:
 
 
 def download_file(
-    url: str, dest: Path, referer: str | None = None, timeout: int = 120, progress=None
+    url: str,
+    dest: Path,
+    referer: str | None = None,
+    timeout: int = 120,
+    progress=None,
+    max_bytes: int | None = None,
 ) -> Path:
     """Plain HTTP download; progress(done_bytes, total_bytes_or_None) is called per 1 MB chunk."""
     headers = {"User-Agent": BROWSER_UA}
     if referer:
         headers["Referer"] = referer
     req = urllib.request.Request(url, headers=headers)
-    limit = get_settings().max_file_bytes
-    with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as f:
+    limit = get_settings().max_file_bytes if max_bytes is None else max_bytes
+    with open_url(req, timeout=timeout) as r, open(dest, "wb") as f:
         total = int(r.headers.get("Content-Length") or 0) or None
         if total and total > limit:
             raise TooLargeError(url)
