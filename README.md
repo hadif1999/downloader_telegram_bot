@@ -80,20 +80,21 @@ and anything over 50 MB is shown as ❌.
 
 ### Enable or disable platforms
 
-All platforms are enabled by default. Set any of these flags to `false` in `.env` to disable it:
+All platforms are disabled by default when their flag is omitted. Set a flag to `true` in `.env`
+to enable that platform:
 
 ```dotenv
-YOUTUBE_ENABLED=true
-INSTAGRAM_ENABLED=true
-TIKTOK_ENABLED=true
-PINTEREST_ENABLED=true
-SNAPCHAT_ENABLED=true
-LIKEE_ENABLED=true
-VK_ENABLED=true
-FACEBOOK_ENABLED=true
-THREADS_ENABLED=true
-SOUNDCLOUD_ENABLED=true
-SPOTIFY_ENABLED=true
+YOUTUBE_ENABLED=false
+INSTAGRAM_ENABLED=false
+TIKTOK_ENABLED=false
+PINTEREST_ENABLED=false
+SNAPCHAT_ENABLED=false
+LIKEE_ENABLED=false
+VK_ENABLED=false
+FACEBOOK_ENABLED=false
+THREADS_ENABLED=false
+SOUNDCLOUD_ENABLED=false
+SPOTIFY_ENABLED=false
 ```
 
 Disabled platforms are hidden from `/start` and `/help`, their links are ignored, and old download

@@ -9,17 +9,17 @@ class Settings(BaseSettings):
 
     bot_token: str = ""
 
-    youtube_enabled: bool = True
-    instagram_enabled: bool = True
-    tiktok_enabled: bool = True
-    pinterest_enabled: bool = True
-    snapchat_enabled: bool = True
-    likee_enabled: bool = True
-    vk_enabled: bool = True
-    facebook_enabled: bool = True
-    threads_enabled: bool = True
-    soundcloud_enabled: bool = True
-    spotify_enabled: bool = True
+    youtube_enabled: bool = False
+    instagram_enabled: bool = False
+    tiktok_enabled: bool = False
+    pinterest_enabled: bool = False
+    snapchat_enabled: bool = False
+    likee_enabled: bool = False
+    vk_enabled: bool = False
+    facebook_enabled: bool = False
+    threads_enabled: bool = False
+    soundcloud_enabled: bool = False
+    spotify_enabled: bool = False
     # Local Telegram Bot API server (allows uploads up to 2 GB). Empty = official cloud API.
     bot_api_url: str = "http://telegram-bot-api:8081"
     bot_api_local: bool = True
