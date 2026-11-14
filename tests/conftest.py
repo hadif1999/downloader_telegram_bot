@@ -14,6 +14,8 @@ from app import config
 
 config.Settings.model_config["env_file"] = None
 os.environ["BOT_TOKEN"] = "123456:offline-tests"
+os.environ.pop("FORCE_JOIN_CHANNEL_ID", None)
+os.environ.pop("FORCE_JOIN_CHANNEL_URL", None)
 for name in (
     "YOUTUBE",
     "INSTAGRAM",

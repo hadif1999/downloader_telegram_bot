@@ -167,6 +167,13 @@ FAILED = "⚠️ Download failed. Please try again later or pick another format.
 TOO_BIG = "❌ This format is larger than the upload limit."
 UNAVAILABLE = "⚠️ This format or audio language is no longer available. Please send the link again."
 UNCERTAIN = "⚠️ Delivery could not be confirmed. Please check the chat before requesting it again."
+JOIN_REQUIRED = "Join the channel first, then check your membership."
+JOIN_NOT_FOUND = "Membership not found yet. Join the channel, then check again."
+JOIN_UNAVAILABLE = "Membership verification is temporarily unavailable. Please try again."
+
+
+def force_join_caption(title: str, notice: str = JOIN_REQUIRED) -> str:
+    return f"🔒 <b>Join our channel</b>\n\nTo use this bot, join <b>{escape(_short(title, 100))}</b>.\n\n{escape(notice)}"
 
 
 def progress_text(done: int, total: int | None, cells: int = 10, unit: str = "bytes") -> str:

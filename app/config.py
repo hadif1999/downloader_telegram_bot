@@ -1,7 +1,9 @@
+import re
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +13,37 @@ class Settings(BaseSettings):
     bot_token: str = ""
     telegram_api_id: str = ""
     telegram_api_hash: str = ""
+    force_join_channel_id: int | str | None = None
+    force_join_channel_url: str = ""
+
+    @field_validator("force_join_channel_id", mode="before")
+    @classmethod
+    def channel_id(cls, value):
+        if value is None or str(value).strip() == "":
+            return None
+        text = str(value).strip()
+        if re.fullmatch(r"-[1-9]\d*", text):
+            return int(text)
+        if re.fullmatch(r"@[A-Za-z0-9_]{1,32}", text):
+            return text
+        raise ValueError("FORCE_JOIN_CHANNEL_ID must be a negative channel ID or @channel_username")
+
+    @field_validator("force_join_channel_url")
+    @classmethod
+    def channel_url(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            return ""
+        url = urlsplit(value)
+        if (
+            url.scheme != "https"
+            or url.netloc.lower() not in {"t.me", "telegram.me"}
+            or url.query
+            or url.fragment
+            or not re.fullmatch(r"/(?:\+[A-Za-z0-9_-]+|joinchat/[A-Za-z0-9_-]+|[A-Za-z0-9_]+)/?", url.path)
+        ):
+            raise ValueError("FORCE_JOIN_CHANNEL_URL must be an HTTPS Telegram channel/invite link")
+        return value
 
     youtube_enabled: bool = False
     instagram_enabled: bool = False

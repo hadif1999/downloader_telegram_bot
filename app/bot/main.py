@@ -4,6 +4,8 @@ import logging
 from aiogram import Dispatcher
 
 from app.bot.handlers import callbacks, links, start
+from app.bot.membership import MembershipMiddleware
+from app.config import get_settings
 from app.services.telegram import make_bot
 
 
@@ -13,6 +15,9 @@ async def main() -> None:
     dp = Dispatcher()
     dp.include_routers(start.router, callbacks.router, links.router)
     try:
+        membership = await MembershipMiddleware.configure(bot, get_settings())
+        dp.message.outer_middleware(membership)
+        dp.callback_query.outer_middleware(membership)
         await bot.delete_webhook(drop_pending_updates=False, request_timeout=15)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types(), close_bot_session=False)
     finally:

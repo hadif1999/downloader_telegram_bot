@@ -80,3 +80,12 @@ def result_kb(platform: str, media_id: str) -> InlineKeyboardMarkup:
 def add_to_group_kb(bot_username: str) -> InlineKeyboardMarkup:
     url = f"https://t.me/{bot_username}?startgroup=true"
     return InlineKeyboardMarkup(inline_keyboard=[[Btn(text="Add to a group ⤴️", url=url)]])
+
+
+def force_join_kb(url: str, user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [Btn(text="Join channel ↗️", url=url)],
+            [Btn(text="✅ Check membership", callback_data=f"force_join:{user_id}")],
+        ]
+    )

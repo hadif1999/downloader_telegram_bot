@@ -15,4 +15,5 @@ All platforms from the reference screenshots are implemented (see the table in t
 - [ ] i18n of bot texts (texts are centralised in `app/services/captions.py`)
 - [ ] Admin stats / broadcast, per-user rate limits
 - [ ] Periodic clean-up of orphaned files in DOWNLOAD_DIR
-- [ ] Optional channel-subscription gate / ads slot
+- [x] Optional channel-subscription gate configured through `.env`
+- [ ] Ads slot
