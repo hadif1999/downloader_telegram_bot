@@ -23,7 +23,7 @@ uploads), `bgutil-provider` (YouTube PO tokens), `bot` (aiogram polling), `worke
 | Part | Typical | Limit |
 |---|---|---|
 | redis + bot-api + bgutil | ~150 MB | 96m / 192m / 192m |
-| bot idle | ~75 MB | 448m |
+| bot idle | ~90 MB | 512m |
 | per metadata lookup (`EXTRACT_SLOTS=2`) | ~110-125 MB (deno heap capped at 64 MB) | in bot |
 | worker idle | ~75 MB | 512m |
 | one download | ~280-350 MB | in worker |
@@ -73,8 +73,11 @@ docker buildx rm tgdl-builder
 docker image ls media-downloader-bot      # keep the previous tag for rollback, prune older ones
 ```
 
-`systemctl daemon-reload` applies new slice limits to the running slice immediately
-(`systemctl show tg_dl.slice -p MemoryMax`).
+After changing the slice file, `systemctl daemon-reload` is not always enough: an earlier
+`systemctl set-property --runtime` leaves drop-ins in `/run/systemd/system.control/tg_dl.slice.d/`
+that win over the unit file until reboot. Apply live limits with
+`systemctl set-property --runtime tg_dl.slice MemoryHigh=960M MemoryMax=1024M` and confirm with
+`cat /sys/fs/cgroup/tg_dl.slice/memory.max`.
 
 ## Verify
 

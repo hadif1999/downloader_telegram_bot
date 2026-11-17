@@ -25,8 +25,9 @@ services:
     mem_limit: 192m
   bot:
     <<: *limits
-    # ~75 MB idle + EXTRACT_SLOTS (2) lookups, each up to ~125 MB with deno for YouTube.
-    mem_limit: 448m
+    # ~90 MB idle + EXTRACT_SLOTS (2) lookups, each up to ~125-150 MB with deno for YouTube
+    # (measured 381 MB peak incl. page cache and a test process; 512m leaves headroom).
+    mem_limit: 512m
     pull_policy: never
   worker:
     <<: *limits
