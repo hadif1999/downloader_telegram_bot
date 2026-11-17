@@ -11,6 +11,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 
+from app import i18n
 from app.config import get_settings
 from app.models import MediaInfo
 from app.services import cache, captions, media, requests
@@ -125,6 +126,7 @@ async def request_download(
         await asyncio.to_thread(
             download_media.apply_async,
             args=(chat_id, status_id, is_caption, info.platform, info.id, fmt, lang, user_id, reply_to),
+            kwargs={"ui_language": i18n.current()},
             task_id=request_id,
             expires=get_settings().queue_ttl,
             retry=False,

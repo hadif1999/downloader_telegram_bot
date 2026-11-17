@@ -11,6 +11,7 @@ from pathlib import Path
 
 from aiogram.types import FSInputFile
 
+from app import i18n
 from app.config import get_settings
 from app.platforms import registry
 from app.platforms.common import describe, download_file, retry_delay
@@ -66,7 +67,10 @@ def download_estimate(info, fmt: str) -> int:
 
 
 @celery.task(bind=True, name="download_media")
-def download_media(self, chat_id, msg_id, is_caption, platform, media_id, fmt, lang, user_id, reply_to=None):
+def download_media(
+    self, chat_id, msg_id, is_caption, platform, media_id, fmt, lang, user_id, reply_to=None, ui_language=None
+):
+    i18n.use(ui_language)  # the requester's language for every status edit of this task
     try:
         return asyncio.run(
             _run(

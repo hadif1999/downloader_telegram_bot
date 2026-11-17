@@ -14,6 +14,7 @@ from app import config
 
 config.Settings.model_config["env_file"] = None
 os.environ["BOT_TOKEN"] = "123456:offline-tests"
+os.environ["DEFAULT_LANGUAGE"] = "en"  # assertions read English; Farsi is tested explicitly
 os.environ.pop("FORCE_JOIN_CHANNEL_ID", None)
 os.environ.pop("FORCE_JOIN_CHANNEL_URL", None)
 for name in (
@@ -36,6 +37,18 @@ config.get_settings.cache_clear()
 from app.platforms import youtube  # noqa: E402 -- configure offline settings before registry imports
 
 youtube._url_ok = lambda _: False
+
+
+@pytest.fixture(autouse=True)
+def interface_language():
+    """Each test starts in the default language with no remembered user choices."""
+    from app import i18n
+
+    token = i18n._current.set(None)
+    i18n._cache.clear()
+    yield
+    i18n._current.reset(token)
+    i18n._cache.clear()
 
 
 @pytest.fixture(autouse=True)

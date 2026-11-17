@@ -16,6 +16,7 @@ Detail keys platforms may send (all optional):
 from __future__ import annotations
 
 import math
+import re
 import threading
 import time
 from collections import deque
@@ -23,6 +24,7 @@ from html import escape
 
 from yt_dlp.utils import DownloadCancelled
 
+from app.i18n import t
 from app.services.captions import human_size
 
 CELLS = 10
@@ -51,17 +53,17 @@ def bar(fraction: float, cells: int = CELLS) -> str:
 
 
 def clock(seconds: float | None) -> str:
-    """Compact human duration: 45s, 3m 05s, 1h 02m."""
+    """Compact human duration: 45s, 3m 05s, 1h 02m (in the current language)."""
     if seconds is None or seconds < 0 or math.isinf(seconds) or math.isnan(seconds):
         return "—"
     seconds = int(seconds)
     if seconds < 60:
-        return f"{seconds}s"
+        return t("{s}s", s=seconds)
     minutes, seconds = divmod(seconds, 60)
     if minutes < 60:
-        return f"{minutes}m {seconds:02}s"
+        return t("{m}m {s:02}s", m=minutes, s=seconds)
     hours, minutes = divmod(minutes, 60)
-    return f"{hours}h {minutes:02}m"
+    return t("{h}h {m:02}m", h=hours, m=minutes)
 
 
 class Monitor:
@@ -169,9 +171,9 @@ class Monitor:
             body = self._body(now)
             if self.trouble:
                 body += "\n" + self._trouble_lines(now)
-            footer = f"⏱ Elapsed {clock(now - self.started)}"
+            footer = t("⏱ Elapsed {time}", time=clock(now - self.started))
             if self.cancel.is_set() and self.stage != "upload":
-                footer += "\n🛑 <i>Cancelling…</i>"
+                footer += "\n" + t("🛑 <i>Cancelling…</i>")
             return f"{body}\n{footer}\n{self._steps()}"
 
     def _steps(self) -> str:
@@ -181,43 +183,50 @@ class Monitor:
         order = [key for key, _ in STEPS]
         here = order.index(current)
         marks = []
-        for index, (_, label) in enumerate(STEPS):
+        for index, (_, name) in enumerate(STEPS):
             icon = "✅" if index < here else "🔵" if index == here else "⚪"
-            marks.append(f"{icon} {label}")
+            marks.append(f"{icon} {t(name)}")
         return "<i>" + " › ".join(marks) + "</i>"
 
     def _body(self, now: float) -> str:
+        step = t("⚙️ Step time {time}", time=clock(now - self.stage_started))
         if self.stage in PROCESS_STAGES:
             icon, title, hint = PROCESS_STAGES[self.stage]
-            return f"{icon} <b>{title}</b>\n{hint}\n⚙️ Step time {clock(now - self.stage_started)}"
+            return f"{icon} <b>{t(title)}</b>\n{t(hint)}\n{step}"
         if self.stage == "upload":
             size = f"📦 {human_size(self.size)}\n" if self.size else ""
             return (
-                "📤 <b>Uploading to Telegram</b>\nDownload complete. Sending your file…\n"
-                f"{size}⚙️ Step time {clock(now - self.stage_started)}"
+                t("📤 <b>Uploading to Telegram</b>\nDownload complete. Sending your file…")
+                + f"\n{size}{step}"
             )
         if self.stage == "prepare" or (not self.done and not self.total):
-            return "⏳ <b>Preparing download</b>\nWaiting for the first bytes…"
+            return t("⏳ <b>Preparing download</b>\nWaiting for the first bytes…")
         if self.unit == "files":
             return self._files()
         return self._bytes()
 
     def _files(self) -> str:
         if not self.total:
-            return f"⬇️ <b>Downloading</b>\n<b>{self.done}</b> files downloaded\n<i>Total count not provided by the source.</i>"
-        current = min(self.done + 1, self.total)
+            return t(
+                "⬇️ <b>Downloading</b>\n<b>{n}</b> files downloaded\n<i>Total count not provided by the source.</i>",
+                n=self.done,
+            )
         lines = [
-            "⬇️ <b>Downloading</b>",
+            t("⬇️ <b>Downloading</b>"),
             f"<code>{bar(self.done / self.total)}</code> <b>{int(self.done * 100 / self.total)}%</b>",
-            f"🗂 <b>{self.done}</b> / {self.total} files",
+            t("🗂 <b>{done}</b> / {total} files", done=self.done, total=self.total),
         ]
         if self.done < self.total:
-            lines.append(f"📥 Fetching file {current} of {self.total}")
+            lines.append(
+                t("📥 Fetching file {n} of {total}", n=min(self.done + 1, self.total), total=self.total)
+            )
         return "\n".join(lines)
 
     def _bytes(self) -> str:
         track = self.detail.get("track")
-        title = "⬇️ <b>Downloading</b>" + (f" · {escape(track)} track" if track else "")
+        title = t("⬇️ <b>Downloading</b>")
+        if track in ("video", "audio"):
+            title += " · " + t("video track" if track == "video" else "audio track")
         speed = self._speed()
         lines = [title]
         if self.total:
@@ -227,52 +236,75 @@ class Monitor:
                 f"📦 <b>{human_size(self.done) if self.done else '0B'}</b> / {human_size(self.total)}"
             )
         else:
-            lines.append(f"📦 <b>{human_size(self.done)}</b> received")
-            lines.append("<i>Total size not provided by the source.</i>")
+            lines.append(t("📦 <b>{size}</b> received", size=human_size(self.done)))
+            lines.append(t("<i>Total size not provided by the source.</i>"))
         if part_line := self._part_line():
             lines.append(part_line)
         if self.trouble:
             return "\n".join(lines)  # the retry notice replaces speed and ETA
         idle = self._now() - self.last_data
         if idle >= STALL_NOTICE:
-            limit = f", retrying after {clock(self.timeout)}" if self.timeout else ""
-            lines.append(f"⏸ No data for {clock(idle)}{limit}")
+            if self.timeout:
+                lines.append(
+                    t(
+                        "⏸ No data for {idle}, retrying after {limit}",
+                        idle=clock(idle),
+                        limit=clock(self.timeout),
+                    )
+                )
+            else:
+                lines.append(t("⏸ No data for {idle}", idle=clock(idle)))
         else:
-            rate = f"🚀 {human_size(int(speed))}/s" if speed else "🚀 measuring speed…"
+            rate = f"🚀 {human_size(int(speed))}/s" if speed else t("🚀 measuring speed…")
             if speed and self.total and self.total > self.done:
-                rate += f" · ⏳ {clock((self.total - self.done) / speed)} left"
+                rate += " · " + t("⏳ {time} left", time=clock((self.total - self.done) / speed))
             lines.append(rate)
         if self.retries_used:
-            plural = "retry" if self.retries_used == 1 else "retries"
-            lines.append(f"🔁 Recovered after {self.retries_used} {plural}")
+            text = (
+                "🔁 Recovered after {n} retry" if self.retries_used == 1 else "🔁 Recovered after {n} retries"
+            )
+            lines.append(t(text, n=self.retries_used))
         return "\n".join(lines)
 
     def _trouble_lines(self, now: float) -> str:
-        t = self.trouble
-        wait = t["until"] - now
-        when = f"next try in {clock(wait)}" if wait >= 1 else "reconnecting…"
-        if t["scope"] == "download":
+        trouble = self.trouble
+        wait = trouble["until"] - now
+        when = t("next try in {time}", time=clock(wait)) if wait >= 1 else t("reconnecting…")
+        replied = re.fullmatch(r"the server replied (\d+)", trouble["reason"])
+        reason = escape(t("the server replied {code}", code=replied[1]) if replied else t(trouble["reason"]))
+        numbers = {"retry": trouble["retry"], "retries": trouble["retries"], "when": when}
+        if trouble["scope"] == "download":
             lines = [
-                f"⚠️ <b>Download interrupted</b>: {escape(t['reason'])}.",
-                f"🔁 Restarting, retry <b>{t['retry']}</b> of {t['retries']} · {when}",
+                t("⚠️ <b>Download interrupted</b>: {reason}.", reason=reason),
+                t("🔁 Restarting, retry <b>{retry}</b> of {retries} · {when}", **numbers),
             ]
-            if t["kept"]:
-                lines.append(f"♻️ {human_size(t['kept'])} already downloaded will be reused")
+            if trouble["kept"]:
+                lines.append(
+                    t("♻️ {size} already downloaded will be reused", size=human_size(trouble["kept"]))
+                )
             return "\n".join(lines)
-        where = f" of part {t['part']}" if t["part"] else ""
-        lines = [
-            f"⚠️ <b>Connection problem</b>: {escape(t['reason'])}.",
-            f"🔁 Retry <b>{t['retry']}</b> of {t['retries']}{where} · {when}",
-        ]
-        if t["kept"]:
-            lines.append(f"♻️ Resuming from {human_size(t['kept'])}, nothing is downloaded twice")
+        lines = [t("⚠️ <b>Connection problem</b>: {reason}.", reason=reason)]
+        if trouble["part"]:
+            lines.append(
+                t(
+                    "🔁 Retry <b>{retry}</b> of {retries} of part {part} · {when}",
+                    part=trouble["part"],
+                    **numbers,
+                )
+            )
+        else:
+            lines.append(t("🔁 Retry <b>{retry}</b> of {retries} · {when}", **numbers))
+        if trouble["kept"]:
+            lines.append(
+                t("♻️ Resuming from {size}, nothing is downloaded twice", size=human_size(trouble["kept"]))
+            )
         return "\n".join(lines)
 
     def _part_line(self) -> str | None:
         part, parts = self.detail.get("part"), self.detail.get("parts")
         if not part or not parts or parts < 2:
             return None
-        line = f"🧩 Part <b>{part}</b> of {parts}"
+        line = t("🧩 Part <b>{part}</b> of {parts}", part=part, parts=parts)
         size, got = self.detail.get("part_size"), self.detail.get("part_done")
         if size and got is not None:
             line += f" <code>{bar(got / size, PART_CELLS)}</code> {min(100, int(got * 100 / size))}%"

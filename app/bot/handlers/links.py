@@ -11,6 +11,7 @@ from aiogram.types import InputMediaPhoto, Message
 
 from app.bot.errors import report_error
 from app.config import get_settings
+from app.i18n import t
 from app.models import MediaInfo
 from app.platforms import registry
 from app.services import captions, media
@@ -58,7 +59,9 @@ async def on_link(message: Message) -> None:
     found = registry.detect(message.text or message.caption or "")
     if not found:
         if message.chat.type == ChatType.PRIVATE:
-            await message.reply("🔗 Send me a link to a video, photo or track.")
+            await message.reply(
+                t("🔗 Send me a link to a video, photo or track.") + "\n\n" + captions.language_hint()
+            )
         return
     platform, media_id, url = found
     if message.from_user is None:

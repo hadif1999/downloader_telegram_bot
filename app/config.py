@@ -1,7 +1,7 @@
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     bot_token: str = ""
+    # Interface language for users who haven't picked one with /language.
+    default_language: Literal["fa", "en"] = "fa"
     telegram_api_id: str = ""
     telegram_api_hash: str = ""
     # Comma-separated channels a user must join before using the bot (empty disables the gate).

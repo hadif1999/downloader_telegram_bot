@@ -6,6 +6,7 @@ import re
 from html import escape, unescape
 from urllib.parse import urlsplit
 
+from app.i18n import t
 from app.models import MediaInfo
 
 CAPTION_LIMIT = 1024  # Telegram media caption limit
@@ -123,15 +124,15 @@ def gallery_summary(info: MediaInfo) -> str:
     photos = sum(i.type == "photo" for i in info.items)
     videos = sum(i.type == "video" for i in info.items)
     tracks = sum(i.type == "audio" for i in info.items)
-    parts = [f"🖼 {photos} photo{'s' * (photos != 1)}"] if photos else []
-    parts += [f"🎬 {videos} video{'s' * (videos != 1)}"] if videos else []
-    parts += [f"🎵 {tracks} track{'s' * (tracks != 1)}"] if tracks else []
+    parts = [t("🖼 {n} photo" if photos == 1 else "🖼 {n} photos", n=photos)] if photos else []
+    parts += [t("🎬 {n} video" if videos == 1 else "🎬 {n} videos", n=videos)] if videos else []
+    parts += [t("🎵 {n} track" if tracks == 1 else "🎵 {n} tracks", n=tracks)] if tracks else []
     return " · ".join(parts)
 
 
 def info_caption(info: MediaInfo, max_bytes: int) -> str:
     body = gallery_summary(info) if info.kind == "gallery" else format_list(info, max_bytes)
-    return _caption(info, f"{body}\n\nFormats for download ⤵️")
+    return _caption(info, f"{body}\n\n" + t("Formats for download ⤵️"))
 
 
 def status_caption(info: MediaInfo, status: str, fmt: str | None = None, lang: str | None = None) -> str:
@@ -142,7 +143,7 @@ def status_caption(info: MediaInfo, status: str, fmt: str | None = None, lang: s
     if fmt and (option := info.format(fmt)):
         details.append(_short(option.label, 40))
     elif fmt == "all" and info.items:
-        details.append(f"{len(info.items)} files")
+        details.append(t("{n} files", n=len(info.items)))
     if lang:
         details.append(_short(lang.upper(), 20))
     if info.duration:
@@ -153,58 +154,90 @@ def status_caption(info: MediaInfo, status: str, fmt: str | None = None, lang: s
     return _caption(info, context, header=status)
 
 
-QUEUED = "🕓 <b>Queued</b>\nWaiting for a download slot…"
-EXTRACT_WAITING = "🔗 Link received. Waiting to fetch media details…"
+# Fixed status texts, in English. Read them as module attributes (captions.BUSY): each read
+# returns the text in the current language (see __getattr__ below).
+TEXTS = {
+    "QUEUED": "🕓 <b>Queued</b>\nWaiting for a download slot…",
+    "EXTRACT_WAITING": "🔗 Link received. Waiting to fetch media details…",
+    "UPLOADING": "📤 <b>Uploading to Telegram</b>\nDownload complete. Sending your file…",
+    "CANCELLED": "🚫 <b>Download cancelled</b>\nNothing was sent. Pick a format below to start again.",
+    "CANCEL_DONE": "🚫 Download cancelled.",
+    "CANCEL_PENDING": "🛑 Cancelling… the download stops within a few seconds.",
+    "CANCEL_TOO_LATE": "📤 Too late to cancel: the file is already being sent.",
+    "CANCEL_DENIED": "Only the person who started this download can cancel it.",
+    "BUSY": "⏳ You already have a download in progress. Please wait until it finishes.",
+    "EXPIRED": "⌛ This request has expired, please send the link again.",
+    "FAILED": "⚠️ Download failed. Please try again later or pick another format.",
+    "TOO_BIG": "❌ This format is larger than the upload limit.",
+    "UNAVAILABLE": "⚠️ This format or audio language is no longer available. Please send the link again.",
+    "UNCERTAIN": "⚠️ Delivery could not be confirmed. Please check the chat before requesting it again.",
+    "JOIN_REQUIRED": "Join the channel first, then check your membership.",
+    "JOIN_NOT_FOUND": "Membership not found yet. Join the channel, then check again.",
+    "JOIN_UNAVAILABLE": "Membership verification is temporarily unavailable. Please try again.",
+    "JOIN_REQUIRED_MANY": "Join all of these channels first, then check your membership.",
+    "JOIN_NOT_FOUND_MANY": "Membership not found in every channel yet. Join the remaining channels, then check again.",
+}
+
+
+def __getattr__(name: str) -> str:
+    if name in TEXTS:
+        return t(TEXTS[name])
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def extracting_caption(platform: str, elapsed: int = 0) -> str:
-    text = f"🔎 Checking your {escape(platform)} link…\nFetching media details and available formats."
+    text = t(
+        "🔎 Checking your {platform} link…\nFetching media details and available formats.",
+        platform=escape(platform),
+    )
     if elapsed:
-        text += f"\n⏱ {elapsed}s elapsed. Some sites take longer to respond."
+        text += "\n" + t("⏱ {elapsed}s elapsed. Some sites take longer to respond.", elapsed=elapsed)
     return text
 
 
-UPLOADING = "📤 <b>Uploading to Telegram</b>\nDownload complete. Sending your file…"
-CANCELLED = "🚫 <b>Download cancelled</b>\nNothing was sent. Pick a format below to start again."
-CANCEL_DONE = "🚫 Download cancelled."
-CANCEL_PENDING = "🛑 Cancelling… the download stops within a few seconds."
-CANCEL_TOO_LATE = "📤 Too late to cancel: the file is already being sent."
-CANCEL_DENIED = "Only the person who started this download can cancel it."
-BUSY = "⏳ You already have a download in progress. Please wait until it finishes."
-EXPIRED = "⌛ This request has expired, please send the link again."
-FAILED = "⚠️ Download failed. Please try again later or pick another format."
-TOO_BIG = "❌ This format is larger than the upload limit."
-UNAVAILABLE = "⚠️ This format or audio language is no longer available. Please send the link again."
-UNCERTAIN = "⚠️ Delivery could not be confirmed. Please check the chat before requesting it again."
-JOIN_REQUIRED = "Join the channel first, then check your membership."
-JOIN_NOT_FOUND = "Membership not found yet. Join the channel, then check again."
-JOIN_UNAVAILABLE = "Membership verification is temporarily unavailable. Please try again."
-JOIN_REQUIRED_MANY = "Join all of these channels first, then check your membership."
-JOIN_NOT_FOUND_MANY = (
-    "Membership not found in every channel yet. Join the remaining channels, then check again."
-)
-
-
-def force_join_caption(titles: str | list[str], notice: str = JOIN_REQUIRED) -> str:
+def force_join_caption(titles: str | list[str], notice: str | None = None) -> str:
     """Prompt for the channels the user still has to join (one or several)."""
     titles = [titles] if isinstance(titles, str) else list(titles)
+    notice = escape(notice if notice is not None else t(TEXTS["JOIN_REQUIRED"]))
     if len(titles) == 1:
-        return f"🔒 <b>Join our channel</b>\n\nTo use this bot, join <b>{escape(_short(titles[0], 100))}</b>.\n\n{escape(notice)}"
+        title = escape(_short(titles[0], 100))
+        return t("🔒 <b>Join our channel</b>\n\nTo use this bot, join <b>{title}</b>.", title=title) + (
+            f"\n\n{notice}"
+        )
     listed = "\n".join(f"• <b>{escape(_short(title, 100))}</b>" for title in titles)
-    return f"🔒 <b>Join our channels</b>\n\nTo use this bot, join:\n{listed}\n\n{escape(notice)}"
+    return t("🔒 <b>Join our channels</b>\n\nTo use this bot, join:") + f"\n{listed}\n\n{notice}"
 
 
 def result_caption(info: MediaInfo, bot_username: str) -> str:
-    return _caption(info, f"Downloaded by @{escape(_short(bot_username, 64))} 🤖")
+    return _caption(info, t("Downloaded by @{bot} 🤖", bot=escape(_short(bot_username, 64))))
+
+
+def language_hint() -> str:
+    return t("🌐 To change the language, send /language")
 
 
 def welcome(platforms, bot_username: str) -> str:
-    lines = ["👋 Hello!", "", "📥 I can help you download videos, photos and music from:", ""]
+    lines = [t("👋 Hello!"), "", t("📥 I can help you download videos, photos and music from:"), ""]
     lines += [f"{p.emoji} {p.title}" for p in platforms]
     lines += [
         "",
-        "• To download, just send me a link to the video, photo or track.",
+        t("• To download, just send me a link to the video, photo or track."),
         "",
-        "<i>(I also work in groups. To add me to a group, press the button below 👇)</i>",
+        t("<i>(I also work in groups. To add me to a group, press the button below 👇)</i>"),
+        "",
+        language_hint(),
     ]
     return "\n".join(lines)
+
+
+def language_menu(current: str) -> str:
+    """Shown by /language, in both languages so anyone can find their own."""
+    from app.i18n import LANGUAGES, label
+
+    return "🌐 <b>زبان ربات را انتخاب کنید</b>\n🌐 <b>Choose the bot's language</b>\n\n" + t(
+        "Current language: {language}", language=label(current if current in LANGUAGES else "fa")
+    )
+
+
+def language_changed() -> str:
+    return t("✅ Language changed to English.") + "\n\n" + language_hint()

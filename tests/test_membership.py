@@ -399,8 +399,10 @@ def test_same_gate_is_installed_on_messages_and_callbacks(monkeypatch):
     monkeypatch.setattr(bot_main, "make_bot", lambda: b)
     monkeypatch.setattr(bot_main, "Dispatcher", lambda: dp)
     asyncio.run(bot_main.main())
-    gate_instance = dp.message.outer_middleware.call_args.args[0]
-    dp.callback_query.outer_middleware.assert_called_once_with(gate_instance)
+    # Language first (so join prompts are translated), then the same membership gate on both paths.
+    installed = [c.args[0] for c in dp.message.outer_middleware.call_args_list]
+    assert [type(m).__name__ for m in installed] == ["LanguageMiddleware", "MembershipMiddleware"]
+    assert [c.args[0] for c in dp.callback_query.outer_middleware.call_args_list] == installed
 
 
 def test_real_dispatcher_blocks_both_paths_before_download_handlers(monkeypatch):

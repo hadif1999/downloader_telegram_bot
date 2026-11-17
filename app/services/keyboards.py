@@ -5,6 +5,7 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton as Btn
 from aiogram.types import InlineKeyboardMarkup
 
+from app.i18n import LANGUAGES, label, t
 from app.models import MediaInfo
 
 SEP = "|"
@@ -32,7 +33,9 @@ def _rows(buttons: list[Btn], per_row: int) -> list[list[Btn]]:
 def formats_kb(info: MediaInfo, max_bytes: int) -> InlineKeyboardMarkup:
     rows: list[list[Btn]] = []
     if info.kind == "gallery":
-        rows.append([Btn(text=f"📥 Download ({len(info.items)})", callback_data=cb("fmt", info, fmt="all"))])
+        rows.append(
+            [Btn(text=t("📥 Download ({n})", n=len(info.items)), callback_data=cb("fmt", info, fmt="all"))]
+        )
     else:
         video = [
             Btn(text=f"📹 {f.label}", callback_data=cb("fmt", info, fmt=f.key))
@@ -53,7 +56,7 @@ def formats_kb(info: MediaInfo, max_bytes: int) -> InlineKeyboardMarkup:
 
 
 def languages_kb(info: MediaInfo, fmt: str) -> InlineKeyboardMarkup:
-    buttons = [Btn(text="🎬 Original", callback_data=cb("dl", info, fmt=fmt))]
+    buttons = [Btn(text=t("🎬 Original"), callback_data=cb("dl", info, fmt=fmt))]
     buttons += [
         Btn(text=t.label, callback_data=cb("dl", info, fmt=fmt, lang=t.lang))
         for t in info.audio_tracks
@@ -71,7 +74,7 @@ def cancel_kb(request_id: str) -> InlineKeyboardMarkup:
     """Shown on the status card while a download is queued or running."""
     data = f"{CANCEL}{SEP}{request_id}"
     assert len(data.encode()) <= 64, data
-    return InlineKeyboardMarkup(inline_keyboard=[[Btn(text="✖️ Cancel download", callback_data=data)]])
+    return InlineKeyboardMarkup(inline_keyboard=[[Btn(text=t("✖️ Cancel download"), callback_data=data)]])
 
 
 def result_kb(platform: str, media_id: str) -> InlineKeyboardMarkup:
@@ -79,7 +82,7 @@ def result_kb(platform: str, media_id: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 Btn(
-                    text="🎵 Download music from video",
+                    text=t("🎵 Download music from video"),
                     callback_data=cb("music", platform, media_id, "mp3"),
                 )
             ]
@@ -89,20 +92,38 @@ def result_kb(platform: str, media_id: str) -> InlineKeyboardMarkup:
 
 def add_to_group_kb(bot_username: str) -> InlineKeyboardMarkup:
     url = f"https://t.me/{bot_username}?startgroup=true"
-    return InlineKeyboardMarkup(inline_keyboard=[[Btn(text="Add to a group ⤴️", url=url)]])
+    return InlineKeyboardMarkup(inline_keyboard=[[Btn(text=t("Add to a group ⤴️"), url=url)]])
 
 
 def force_join_kb(links: str | list[tuple[str, str]], user_id: int) -> InlineKeyboardMarkup:
     """One join button per channel still to join (`(title, url)` pairs), then the check button."""
     links = [("", links)] if isinstance(links, str) else list(links)
     if len(links) == 1:
-        rows = [[Btn(text="Join channel ↗️", url=links[0][1])]]
+        rows = [[Btn(text=t("Join channel ↗️"), url=links[0][1])]]
     else:
-        rows = [[Btn(text=f"Join {_short_title(title)} ↗️", url=url)] for title, url in links]
-    rows.append([Btn(text="✅ Check membership", callback_data=f"force_join:{user_id}")])
+        rows = [[Btn(text=t("Join {title} ↗️", title=_short_title(title)), url=url)] for title, url in links]
+    rows.append([Btn(text=t("✅ Check membership"), callback_data=f"force_join:{user_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _short_title(title: str, limit: int = 32) -> str:
     title = " ".join(title.split()) or "channel"
     return title if len(title) <= limit else title[: limit - 1] + "…"
+
+
+LANGUAGE = "uilang"
+
+
+def language_kb(current: str) -> InlineKeyboardMarkup:
+    """One flag button per language; the active one is ticked."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                Btn(
+                    text=("✅ " if code == current else "") + label(code),
+                    callback_data=f"{LANGUAGE}{SEP}{code}",
+                )
+            ]
+            for code in LANGUAGES
+        ]
+    )

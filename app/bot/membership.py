@@ -14,9 +14,10 @@ from aiogram.types import CallbackQuery, Message
 from app.bot.errors import acknowledge_callback
 from app.bot.handlers.start import send_welcome
 from app.config import Settings
+from app.i18n import t
 from app.platforms import registry
 from app.services import captions
-from app.services.keyboards import force_join_kb
+from app.services.keyboards import LANGUAGE, SEP, force_join_kb
 
 log = logging.getLogger(__name__)
 CHECK_PREFIX = "force_join:"
@@ -123,8 +124,18 @@ class MembershipMiddleware(BaseMiddleware):
         else:
             await message.answer(text, reply_markup=markup)
 
+    @staticmethod
+    def language_request(event) -> bool:
+        """/language and its buttons work before joining, so the join prompt can be read."""
+        if isinstance(event, CallbackQuery):
+            return bool(event.data) and event.data.startswith(LANGUAGE + SEP)
+        text = (event.text or "").strip() if isinstance(event, Message) else ""
+        return bool(text) and text.split(maxsplit=1)[0].partition("@")[0] == "/language"
+
     async def __call__(self, handler, event, data):
         callback = isinstance(event, CallbackQuery)
+        if self.language_request(event):
+            return await handler(event, data)
         check = callback and bool(event.data) and event.data.startswith(CHECK_PREFIX)
         if not self.channels and not check:
             return await handler(event, data)
@@ -148,7 +159,7 @@ class MembershipMiddleware(BaseMiddleware):
             )
             if event.data != f"{CHECK_PREFIX}{user.id}" or not valid_button:
                 await acknowledge_callback(
-                    event, "Send /start to check your own membership.", show_alert=True
+                    event, t("Send /start to check your own membership."), show_alert=True
                 )
                 return None
             await acknowledge_callback(event)  # don't leave a spinner while querying Telegram
