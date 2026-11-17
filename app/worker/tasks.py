@@ -16,7 +16,7 @@ from app.config import get_settings
 from app.platforms import registry
 from app.platforms.common import download_file
 from app.platforms.ytdlp import TooLarge, UserError
-from app.services import cache, captions, media, requests
+from app.services import cache, captions, media, requests, storage
 from app.services.delivery import CheckpointError, Journal, edit_status, local_file, send_gallery, send_media
 from app.services.errors import user_message
 from app.services.telegram import make_bot
@@ -59,6 +59,13 @@ def make_thumb(url: str | None, dest: Path) -> Path | None:
     return out if out.exists() and out.stat().st_size <= 200_000 else None
 
 
+def download_estimate(info, fmt: str) -> int:
+    """Approximate bytes a download needs on disk; MP3 sources are larger than the output."""
+    option = info.format(fmt)
+    size = option.size if option and option.size else 0
+    return size * 2 if fmt == "mp3" else size
+
+
 @celery.task(bind=True, name="download_media")
 def download_media(self, chat_id, msg_id, is_caption, platform, media_id, fmt, lang, user_id, reply_to=None):
     try:
@@ -80,6 +87,7 @@ async def _run(
     dest = s.download_dir / uuid.uuid4().hex
     info = None
     journal = None
+    slot = None
 
     async def status(text):
         body = captions.status_caption(info, text, fmt, lang) if info else text
@@ -131,10 +139,23 @@ async def _run(
                         future.cancel()  # late progress must not overwrite UPLOADING
 
                 dest.mkdir(parents=True, exist_ok=True)
-                result = await asyncio.to_thread(platform.download, info, fmt, lang, dest, on_progress)
+                # A pinned slot keeps retained files from being evicted while they upload.
+                slot = await asyncio.to_thread(
+                    storage.open_slot, s.download_dir, platform_name, media_id, fmt, lang
+                )
+                result = slot.result
+                if result is not None:
+                    log.info("serving retained media: request=%s", request_id)
+                else:
+                    await asyncio.to_thread(
+                        storage.ensure_space, s.download_dir, download_estimate(info, fmt)
+                    )
+                    result = await asyncio.to_thread(platform.download, info, fmt, lang, dest, on_progress)
                 paths = [p for p, _ in result.files] or [result.path]
                 if any(Path(p).stat().st_size > s.max_file_bytes for p in paths):
                     raise TooLarge(media_id)
+                if slot.result is None:
+                    result = await asyncio.to_thread(slot.store, result)
                 await status(captions.UPLOADING)
                 me = await bot.get_me()
                 caption = captions.result_caption(info, me.username)
@@ -199,6 +220,9 @@ async def _run(
         raise
     finally:
         shutil.rmtree(dest, ignore_errors=True)
+        if slot is not None:
+            # Releases the pin, then enforces the retention limits and sweeps orphans.
+            await asyncio.to_thread(slot.close)
         try:
             await bot.session.close()
         except Exception:

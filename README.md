@@ -208,6 +208,13 @@ Old queued requests without a delivery journal receive an expired-request messag
 submitted again. Legacy file-ID cache keys are ignored because they did not record bot ownership.
 Source URLs and metadata keep their existing cache lifetimes.
 
+**Disk usage.** Each download runs in its own temporary directory that is removed after delivery.
+Only the `MEDIA_CACHE_ITEMS` most recent downloads (default 3) are kept, as hardlinks in
+`DOWNLOAD_DIR/.media-cache`, within `MEDIA_CACHE_MAX_MB` and `MEDIA_CACHE_TTL`. A retry of the same
+media/format is then served from disk. Downloads are refused while less than `MIN_FREE_DISK_MB` is
+free, after old retained media has been evicted. Directories left by killed workers are swept
+automatically. Details: [docs/RELIABILITY.md](docs/RELIABILITY.md#disk-management).
+
 `MAX_FILE_MB` caps finished uploads. `MAX_SOURCE_MB` (default: 4096) separately caps input bytes for
 MP3 conversion, since a large source may encode into a small MP3. Displayed MP3 sizes estimate the
 192 kbps encoded output; completed files are checked again before upload. Cached Telegram files can

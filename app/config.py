@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     task_time_limit: int = Field(default=60 * 60, ge=120, le=24 * 3600)
     queue_ttl: int = Field(default=24 * 3600, ge=60, le=7 * 24 * 3600)
     download_dir: Path = Path("/downloads")
+    # Recently downloaded files kept on disk for retries (LRU); 0 disables retention.
+    media_cache_items: int = Field(default=3, ge=0, le=100)
+    media_cache_max_mb: int = Field(default=4096, ge=0)
+    media_cache_ttl: int = Field(default=6 * 3600, ge=60, le=7 * 24 * 3600)
+    # Free space kept on the download volume; new downloads are refused below it.
+    min_free_disk_mb: int = Field(default=1024, ge=0)
 
     # Netscape cookie files named <platform>.txt (youtube.txt, instagram.txt, facebook.txt, ...)
     cookies_dir: Path = Path("/cookies")

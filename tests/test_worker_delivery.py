@@ -6,7 +6,7 @@ import pytest
 from aiogram.exceptions import TelegramNetworkError
 
 from app.models import DownloadResult, FormatOption, MediaInfo
-from app.services import cache, captions, requests
+from app.services import cache, captions, requests, storage
 from app.worker import tasks
 
 
@@ -38,6 +38,11 @@ def worker(request_store, monkeypatch, tmp_path):
     return NS(bot=b, info=i, edit=edit, download=download, directory=tmp_path)
 
 
+def attempt_dirs(root):
+    """Per-attempt download directories; the bounded retention store is expected to remain."""
+    return [p for p in root.iterdir() if p.name != storage.CACHE_DIR]
+
+
 def run(is_caption=False):
     return asyncio.run(tasks._run(1, 20, is_caption, "yt", "id", "720", None, None, 10, "a"))
 
@@ -60,7 +65,7 @@ def test_success_caches_result_cleans_files_and_deduplicates_replay(worker):
     worker.bot.send_video.assert_awaited_once()
     assert cache.get_file_id("yt", "id", "720", None) == "video-id"
     assert requests.load("a", 10)["phase"] == "done"
-    assert not list(worker.directory.iterdir())
+    assert not attempt_dirs(worker.directory)
 
 
 def test_file_cache_failure_does_not_turn_success_into_failure(worker, monkeypatch):
@@ -97,7 +102,7 @@ def test_ambiguous_upload_marks_uncertain_and_raises_not_celery_success(worker):
     assert requests.load("a", 10)["phase"] == "uncertain"
     assert worker.edit.call_args.args[3] == captions.status_caption(worker.info, captions.UNCERTAIN, "720")
     worker.bot.send_video.assert_awaited_once()
-    assert not list(worker.directory.iterdir())
+    assert not attempt_dirs(worker.directory)
 
 
 def test_download_failure_marks_failed_and_releases_user(worker, request_store):
@@ -106,7 +111,7 @@ def test_download_failure_marks_failed_and_releases_user(worker, request_store):
         run()
     assert requests.load("a", 10)["phase"] == "failed"
     assert request_store.get(requests.keys("a", 10)[2]) is None
-    assert not list(worker.directory.iterdir())
+    assert not attempt_dirs(worker.directory)
 
 
 def test_stale_format_is_rejected_before_downloading(worker):
@@ -154,3 +159,31 @@ def test_session_cleanup_cannot_change_download_outcome(worker, download_fails):
         run()
         worker.bot.send_video.assert_awaited_once()
         assert requests.load("a", 10)["phase"] == "done"
+
+
+def test_retained_media_survives_attempt_cleanup(worker):
+    run()
+    retained = storage.usage(worker.directory)
+    assert retained["items"] == 1 and retained["bytes"] >= len(b"video")  # media plus manifest
+
+
+def test_uncertain_upload_retry_reuses_retained_file_without_redownloading(worker, request_store):
+    worker.bot.send_video.side_effect = TelegramNetworkError(method=MagicMock(), message="response lost")
+    with pytest.raises(requests.DeliveryUncertain):
+        run()
+    worker.bot.send_video.side_effect = None
+    # The user explicitly asks again, which creates a fresh request for the same media.
+    assert requests.create("b", 10)
+    asyncio.run(tasks._run(1, 21, False, "yt", "id", "720", None, None, 10, "b"))
+    assert worker.download.call_count == 1
+    assert worker.bot.send_video.await_count == 2
+    sent = worker.bot.send_video.await_args.kwargs.get("video") or worker.bot.send_video.await_args.args[1]
+    assert storage.CACHE_DIR in str(sent)
+
+
+def test_download_refused_when_disk_is_low(worker, monkeypatch):
+    monkeypatch.setattr(storage.shutil, "disk_usage", lambda _: NS(free=0))
+    with pytest.raises(storage.StorageFull):
+        run()
+    worker.download.assert_not_called()
+    assert storage.LOW_STORAGE in worker.edit.call_args.args[3]

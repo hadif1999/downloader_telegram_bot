@@ -1,5 +1,7 @@
+import logging
+
 from celery import Celery
-from celery.signals import after_setup_logger, after_setup_task_logger
+from celery.signals import after_setup_logger, after_setup_task_logger, worker_ready
 
 from app.config import get_settings
 from app.logging_config import redact_logs
@@ -24,3 +26,15 @@ celery.conf.update(
     broker_transport_options={"visibility_timeout": s.task_time_limit + 600},
     broker_connection_retry_on_startup=True,
 )
+
+
+@worker_ready.connect(weak=False)
+def sweep_download_dir(**_):
+    """Remove files left behind by killed workers and apply retention limits at startup."""
+    from app.services import storage
+
+    try:
+        storage.prune(s.download_dir)
+        logging.getLogger(__name__).info("media retention: %s", storage.usage(s.download_dir))
+    except Exception:
+        logging.getLogger(__name__).exception("download directory sweep failed")

@@ -46,8 +46,26 @@ and source URL cache entries are unchanged. Do not clear deployment Redis during
 Limits: `QUEUE_TTL` defaults to 86400 seconds (60 seconds–7 days); `TASK_TIME_LIMIT` defaults to
 3600 seconds (120 seconds–24 hours). `MAX_FILE_MB` caps final files; `MAX_SOURCE_MB` defaults to
 4096 MB and bounds inputs that will be converted to MP3. Normal cleanup removes per-attempt UUID
-directories and temporary cookie/thumbnail copies. A hard OS/container kill can still leave orphaned
-download directories; periodic orphan cleanup remains a roadmap task.
+directories and temporary cookie/thumbnail copies. A hard OS/container kill can leave an orphaned
+attempt directory; workers remove those once they are older than `TASK_TIME_LIMIT` + 10 minutes
+(at worker startup and after every download).
+
+## Disk management
+
+Finished files are hardlinked into `DOWNLOAD_DIR/.media-cache` before the attempt directory is
+removed, so retention costs no extra space during upload. At most `MEDIA_CACHE_ITEMS` (default 3)
+entries are kept, least recently used first out, bounded by `MEDIA_CACHE_MAX_MB` in total and
+`MEDIA_CACHE_TTL` since last use. A worker serves a matching platform/media/format/language from
+this store instead of downloading it again, e.g. when the user retries after an uncertain upload.
+Telegram `file_id` resends remain the first choice and need no disk at all.
+
+Workers coordinate through `flock`: entries being uploaded hold a shared pin and are never evicted;
+eviction is skipped for them and retried after the next download. Before a download the worker
+requires `MIN_FREE_DISK_MB` plus the estimated size (twice the output for MP3 conversion) to be free.
+If not, it evicts all unpinned retained media and otherwise refuses with a low-storage message.
+Failures to store or read retained media fall back to a normal download. The store must be on the
+same filesystem as the attempt directories (it is, under `DOWNLOAD_DIR`); otherwise nothing is
+retained.
 
 ## Network and media contracts
 
