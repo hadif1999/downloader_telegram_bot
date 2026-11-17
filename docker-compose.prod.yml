@@ -2,8 +2,8 @@
 #   docker compose -p tg_dl -f docker-compose.yml -f docker-compose.prod.yml up -d --no-build
 #
 # * All containers run inside the systemd slice `tg_dl.slice` (deploy/tg_dl.slice), which caps the
-#   whole bot at 650 MB RAM (no swap) and one CPU core, with lower I/O priority than other services:
-#   ~300 MB for the idle stack plus 350 MB for a running download.
+#   whole bot at 1 GB RAM (no swap) and one CPU core, with lower I/O priority than other services:
+#   ~300 MB idle stack + 2 metadata lookups (EXTRACT_SLOTS, ~125 MB each) + 1 download (~350 MB).
 #   Per-service limits below only stop one container from starving its siblings inside that budget.
 # * Persistent data lives on a dedicated 10 GB filesystem mounted at DATA_DIR (deploy/README.md),
 #   so downloads can never fill the host disk; the worker's MIN_FREE_DISK_MB guard measures it.
@@ -25,12 +25,13 @@ services:
     mem_limit: 192m
   bot:
     <<: *limits
-    mem_limit: 160m
+    # ~75 MB idle + EXTRACT_SLOTS (2) lookups, each up to ~125 MB with deno for YouTube.
+    mem_limit: 448m
     pull_policy: never
   worker:
     <<: *limits
-    # ~120 MB idle + 350 MB for one download (yt-dlp, ffmpeg and bounded page cache).
-    mem_limit: 480m
+    # ~75 MB idle + one download: yt-dlp re-extraction (deno), ffmpeg and bounded page cache.
+    mem_limit: 512m
     pull_policy: never
     # Recycle a pool process after a task once it exceeds 200 MB, so memory retained by a large
     # download is returned instead of accumulating inside the shared budget.

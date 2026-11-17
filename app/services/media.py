@@ -15,7 +15,8 @@ from app.platforms import registry
 from app.platforms.common import download_file, guess_ext
 from app.services import cache
 
-extraction_slots = asyncio.Semaphore(4)
+# Concurrent metadata lookups in the bot (each may run deno for YouTube, ~125 MB with its heap cap).
+extraction_slots = asyncio.Semaphore(get_settings().extract_slots)
 
 
 async def resolve_async(platform_name: str, media_id: str, url: str | None = None) -> MediaInfo | None:

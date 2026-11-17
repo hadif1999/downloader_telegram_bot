@@ -126,29 +126,22 @@ network-layer routing/VPNs remain usable. Only the configured PO-token provider'
 ### Deploying on a shared VPS
 
 `docker-compose.prod.yml` runs the stack as Compose project `tg_dl` inside the systemd slice
-`deploy/tg_dl.slice`: 650 MB RAM in total (no swap; ~300 MB idle stack + 350 MB for a download),
-one CPU core, and lower disk I/O priority than other services. Redis, Bot API and download data live on a dedicated 10 GB filesystem, so the bot
+`deploy/tg_dl.slice`: **1 GB RAM in total** (no swap), one CPU core, and lower disk I/O priority than
+other services. Redis, Bot API and download data live on a dedicated 10 GB filesystem, so the bot
 cannot fill the host disk. No ports are published and the Docker daemon configuration is unchanged.
+Step-by-step install, release, verification, monitoring and rollback: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
-```sh
-# once, as root, in /opt/tg_dl (repository files + .env)
-cp deploy/tg_dl.slice /etc/systemd/system/ && systemctl daemon-reload
-truncate -s 10G /opt/tg_dl/data.img && mkfs.ext4 -q -m 0 /opt/tg_dl/data.img
-mkdir -p /opt/tg_dl/data
-echo '/opt/tg_dl/data.img /opt/tg_dl/data ext4 loop,noatime,nofail 0 2' >> /etc/fstab && mount /opt/tg_dl/data
-mkdir -p /opt/tg_dl/data/{redis,botapi,downloads} && chown 1000:1000 /opt/tg_dl/data/downloads
-# every release (image built elsewhere: docker save media-downloader-bot | ssh … docker load)
-docker compose -p tg_dl -f docker-compose.yml -f docker-compose.prod.yml up -d --no-build
-```
-
-Memory: each bot/worker process idles at ~75 MB because aiogram's ~460 pydantic models are built on
-first use instead of at import (`app/lean_models.py`; eager builds cost ~175 MB per process). The
-idle stack is ~300 MB, leaving 350 MB for one download (`MAX_PARALLEL_DOWNLOADS=1`) inside 650 MB;
+Memory budget (measured on the VPS): the idle stack is ~300 MB; each bot/worker process idles at
+~75 MB because aiogram's ~460 pydantic models are built on first use instead of at import
+(`app/lean_models.py`; eager builds cost ~175 MB per process; `AIOGRAM_EAGER_MODELS=1` restores
+them). A metadata lookup takes ~110-125 MB, mostly deno solving YouTube's JS challenges, whose heap
+is capped with `DENO_V8_FLAGS=--max-old-space-size=64` in the image (~300 MB uncapped); the bot runs
+`EXTRACT_SLOTS` (2) lookups at once. One download (`MAX_PARALLEL_DOWNLOADS=1`) needs ~280-350 MB;
 worker pool processes are recycled after a task once they exceed 200 MB. Downloads are fetched in
 `DOWNLOAD_PART_MB` (200 MB) byte-range parts written straight into the final file and flushed from
 the page cache every 16 MB, so a 2 GB file needs no more memory than a small one (measured: 2 GB in
-a 150 MB container peaks at 88 MB). Set
-`AIOGRAM_EAGER_MODELS=1` to restore aiogram's eager model building.
+a 150 MB container peaks at 88 MB). Roughly: +350 MB per extra download slot, +125 MB per extra
+lookup slot.
 
 Stop any other instance using the same bot token first (for example a local `uv run main.py` stack):
 two Bot API servers or pollers for one token conflict.

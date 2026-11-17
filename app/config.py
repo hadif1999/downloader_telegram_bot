@@ -109,6 +109,8 @@ class Settings(BaseSettings):
     # Downloads are fetched in byte-range parts of this size, flushed to disk and dropped from the
     # page cache after each part, so memory use stays flat even for 2 GB files.
     download_part_mb: int = Field(default=200, ge=1, le=2000)
+    # Metadata lookups (link -> format menu) running at once in the bot; the rest wait their turn.
+    extract_slots: int = Field(default=2, ge=1, le=16)
     # Retries per part (and per whole download); each retry resumes from the bytes already on disk.
     download_retries: int = Field(default=3, ge=0, le=10)
     # Stall timeout in seconds: an attempt fails when no data arrives for this long.

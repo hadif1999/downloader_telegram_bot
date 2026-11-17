@@ -8,7 +8,10 @@ COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /usr/local/bin/uv
 
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PROJECT_ENVIRONMENT=/opt/venv PATH="/opt/venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    # Cap the V8 heap of deno (yt-dlp YouTube challenge solver): ~125 MB instead of ~300 MB per
+    # lookup, measured to solve every challenge (12/12) on the production VPS.
+    DENO_V8_FLAGS=--max-old-space-size=64
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY app ./app
