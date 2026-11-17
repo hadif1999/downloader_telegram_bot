@@ -174,10 +174,19 @@ UNCERTAIN = "⚠️ Delivery could not be confirmed. Please check the chat befor
 JOIN_REQUIRED = "Join the channel first, then check your membership."
 JOIN_NOT_FOUND = "Membership not found yet. Join the channel, then check again."
 JOIN_UNAVAILABLE = "Membership verification is temporarily unavailable. Please try again."
+JOIN_REQUIRED_MANY = "Join all of these channels first, then check your membership."
+JOIN_NOT_FOUND_MANY = (
+    "Membership not found in every channel yet. Join the remaining channels, then check again."
+)
 
 
-def force_join_caption(title: str, notice: str = JOIN_REQUIRED) -> str:
-    return f"🔒 <b>Join our channel</b>\n\nTo use this bot, join <b>{escape(_short(title, 100))}</b>.\n\n{escape(notice)}"
+def force_join_caption(titles: str | list[str], notice: str = JOIN_REQUIRED) -> str:
+    """Prompt for the channels the user still has to join (one or several)."""
+    titles = [titles] if isinstance(titles, str) else list(titles)
+    if len(titles) == 1:
+        return f"🔒 <b>Join our channel</b>\n\nTo use this bot, join <b>{escape(_short(titles[0], 100))}</b>.\n\n{escape(notice)}"
+    listed = "\n".join(f"• <b>{escape(_short(title, 100))}</b>" for title in titles)
+    return f"🔒 <b>Join our channels</b>\n\nTo use this bot, join:\n{listed}\n\n{escape(notice)}"
 
 
 def progress_text(done: int, total: int | None, cells: int = 10, unit: str = "bytes") -> str:

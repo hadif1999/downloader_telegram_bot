@@ -1,10 +1,13 @@
 import re
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 from urllib.parse import urlsplit
 
-from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+MAX_FORCE_JOIN_CHANNELS = 10
 
 
 class Settings(BaseSettings):
@@ -13,37 +16,71 @@ class Settings(BaseSettings):
     bot_token: str = ""
     telegram_api_id: str = ""
     telegram_api_hash: str = ""
-    force_join_channel_id: int | str | None = None
-    force_join_channel_url: str = ""
+    # Comma-separated channels a user must join before using the bot (empty disables the gate).
+    force_join_channel_id: Annotated[list[int | str], NoDecode] = []
+    # Optional comma-separated join links, matched to the channel IDs by position; leave a
+    # position empty for a public channel (its t.me/username link is derived).
+    force_join_channel_url: Annotated[list[str], NoDecode] = []
 
     @field_validator("force_join_channel_id", mode="before")
     @classmethod
-    def channel_id(cls, value):
-        if value is None or str(value).strip() == "":
-            return None
-        text = str(value).strip()
-        if re.fullmatch(r"-[1-9]\d*", text):
-            return int(text)
-        if re.fullmatch(r"@[A-Za-z0-9_]{1,32}", text):
-            return text
-        raise ValueError("FORCE_JOIN_CHANNEL_ID must be a negative channel ID or @channel_username")
+    def channel_ids(cls, value):
+        channels = []
+        for item in _items(value):
+            if str(item).strip() == "":
+                # URLs are matched by position, so a gap would silently shift them.
+                raise ValueError("FORCE_JOIN_CHANNEL_ID contains an empty entry between commas")
+            if isinstance(item, bool):
+                raise ValueError("FORCE_JOIN_CHANNEL_ID entries must be channel IDs or usernames")
+            text = str(item).strip()
+            if re.fullmatch(r"-[1-9]\d*", text):
+                channel = int(text)
+            elif re.fullmatch(r"@[A-Za-z0-9_]{1,32}", text):
+                channel = text
+            else:
+                raise ValueError(
+                    "FORCE_JOIN_CHANNEL_ID entries must be negative channel IDs or @channel_usernames, "
+                    "separated by commas"
+                )
+            if channel in channels:
+                raise ValueError(f"FORCE_JOIN_CHANNEL_ID lists {channel} more than once")
+            channels.append(channel)
+        if len(channels) > MAX_FORCE_JOIN_CHANNELS:
+            raise ValueError(f"FORCE_JOIN_CHANNEL_ID accepts at most {MAX_FORCE_JOIN_CHANNELS} channels")
+        return channels
 
-    @field_validator("force_join_channel_url")
+    @field_validator("force_join_channel_url", mode="before")
     @classmethod
-    def channel_url(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            return ""
-        url = urlsplit(value)
-        if (
-            url.scheme != "https"
-            or url.netloc.lower() not in {"t.me", "telegram.me"}
-            or url.query
-            or url.fragment
-            or not re.fullmatch(r"/(?:\+[A-Za-z0-9_-]+|joinchat/[A-Za-z0-9_-]+|[A-Za-z0-9_]+)/?", url.path)
-        ):
-            raise ValueError("FORCE_JOIN_CHANNEL_URL must be an HTTPS Telegram channel/invite link")
-        return value
+    def channel_urls(cls, value):
+        urls = [str(item).strip() for item in _items(value)]
+        for text in urls:
+            if not text:
+                continue
+            url = urlsplit(text)
+            if (
+                url.scheme != "https"
+                or url.netloc.lower() not in {"t.me", "telegram.me"}
+                or url.query
+                or url.fragment
+                or not re.fullmatch(
+                    r"/(?:\+[A-Za-z0-9_-]+|joinchat/[A-Za-z0-9_-]+|[A-Za-z0-9_]+)/?", url.path
+                )
+            ):
+                raise ValueError("FORCE_JOIN_CHANNEL_URL entries must be HTTPS Telegram channel/invite links")
+        return urls
+
+    @model_validator(mode="after")
+    def channel_urls_match_ids(self):
+        if len(self.force_join_channel_url) > len(self.force_join_channel_id):
+            raise ValueError(
+                "FORCE_JOIN_CHANNEL_URL has more entries than FORCE_JOIN_CHANNEL_ID; "
+                "links are matched to channels by position"
+            )
+        return self
+
+    def force_join_url(self, index: int) -> str:
+        urls = self.force_join_channel_url
+        return urls[index] if index < len(urls) else ""
 
     youtube_enabled: bool = False
     instagram_enabled: bool = False
@@ -88,6 +125,21 @@ class Settings(BaseSettings):
     @property
     def max_source_bytes(self) -> int:
         return self.max_source_mb * 1024 * 1024
+
+
+def _items(value) -> list:
+    """Comma-separated string, single value or list -> entries, without trailing blank entries."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        items = ["" if item is None else item for item in value]
+    elif isinstance(value, str):
+        items = value.split(",")
+    else:
+        items = [value]
+    while items and str(items[-1]).strip() == "":
+        items.pop()
+    return items
 
 
 @lru_cache

@@ -46,8 +46,11 @@ def bot(status=ChatMemberStatus.LEFT):
     return b
 
 
-def gate():
-    return membership.MembershipMiddleware(-100123, "Channel <&>", "https://t.me/channel", "test_bot")
+CHANNEL = membership.Channel(-100123, "Channel <&>", "https://t.me/channel")
+
+
+def gate(*channels):
+    return membership.MembershipMiddleware(channels or (CHANNEL,), "test_bot")
 
 
 def invoke(g, event, b, handler=None):
@@ -59,19 +62,25 @@ def invoke(g, event, b, handler=None):
 @pytest.mark.parametrize(
     "value,expected",
     [
-        (None, None),
-        ("", None),
-        ("  ", None),
-        ("-100123", -100123),
-        (-100123, -100123),
-        (" @my_channel ", "@my_channel"),
+        (None, []),
+        ("", []),
+        ("  ", []),
+        ("-100123", [-100123]),
+        (-100123, [-100123]),
+        (" @my_channel ", ["@my_channel"]),
+        ("-100123, @my_channel ,-100456", [-100123, "@my_channel", -100456]),
+        ("-100123,", [-100123]),
+        ([-100123, "@my_channel"], [-100123, "@my_channel"]),
     ],
 )
 def test_channel_settings_normalize_empty_ids_and_usernames(value, expected):
     assert Settings(_env_file=None, force_join_channel_id=value).force_join_channel_id == expected
 
 
-@pytest.mark.parametrize("value", ["12345", 0, "false", "channel", "@", True])
+@pytest.mark.parametrize(
+    "value",
+    ["12345", 0, "false", "channel", "@", True, "-100123,,-100456", "-100123,-100123", "-100123;-100456"],
+)
 def test_invalid_channel_ids_fail_validation(value):
     with pytest.raises(ValidationError):
         Settings(_env_file=None, force_join_channel_id=value)
@@ -81,17 +90,46 @@ def test_channel_settings_load_from_dotenv(tmp_path):
     path = tmp_path / ".env"
     path.write_text("FORCE_JOIN_CHANNEL_ID=-100123\nFORCE_JOIN_CHANNEL_URL=https://t.me/+Invite_123\n")
     configured = Settings(_env_file=path)
-    assert configured.force_join_channel_id == -100123
-    assert configured.force_join_channel_url == "https://t.me/+Invite_123"
+    assert configured.force_join_channel_id == [-100123]
+    assert configured.force_join_channel_url == ["https://t.me/+Invite_123"]
+    path.write_text(
+        "FORCE_JOIN_CHANNEL_ID=-100123,@public\nFORCE_JOIN_CHANNEL_URL=https://t.me/+Invite_123,\n"
+    )
+    configured = Settings(_env_file=path)
+    assert configured.force_join_channel_id == [-100123, "@public"]
+    assert [configured.force_join_url(0), configured.force_join_url(1)] == ["https://t.me/+Invite_123", ""]
     path.write_text("FORCE_JOIN_CHANNEL_ID=\nFORCE_JOIN_CHANNEL_URL=\n")
-    assert Settings(_env_file=path).force_join_channel_id is None
+    assert Settings(_env_file=path).force_join_channel_id == []
 
 
 @pytest.mark.parametrize(
     "url", ["https://t.me/channel", "https://t.me/+Invite_123", "https://t.me/joinchat/Invite-123", ""]
 )
 def test_channel_invite_urls_are_supported(url):
-    assert Settings(_env_file=None, force_join_channel_url=url).force_join_channel_url == url
+    configured = Settings(_env_file=None, force_join_channel_id=-100123, force_join_channel_url=url)
+    assert configured.force_join_url(0) == url
+
+
+def test_invite_urls_are_matched_to_channels_by_position():
+    configured = Settings(
+        _env_file=None,
+        force_join_channel_id="@public,-100123,-100456",
+        force_join_channel_url=",https://t.me/+First, https://t.me/+Second",
+    )
+    assert [configured.force_join_url(i) for i in range(3)] == [
+        "",
+        "https://t.me/+First",
+        "https://t.me/+Second",
+    ]
+
+
+def test_more_urls_than_channels_fail_validation():
+    with pytest.raises(ValidationError, match="by position"):
+        Settings(
+            _env_file=None,
+            force_join_channel_id=-100123,
+            force_join_channel_url="https://t.me/a,https://t.me/b",
+        )
 
 
 @pytest.mark.parametrize(
@@ -102,11 +140,12 @@ def test_channel_invite_urls_are_supported(url):
         "https://t.me@evil.invalid/channel",
         "https://t.me/c/123/4",
         "javascript:alert(1)",
+        "https://t.me/ok,http://t.me/bad",
     ],
 )
 def test_invalid_join_urls_fail_validation(url):
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, force_join_channel_url=url)
+        Settings(_env_file=None, force_join_channel_id="-100123,-100456", force_join_channel_url=url)
 
 
 def test_disabled_gate_has_no_api_calls_or_behavior_change():
@@ -126,7 +165,7 @@ def test_public_channel_resolves_canonical_id_and_link():
             b, Settings(_env_file=None, force_join_channel_id="@channel")
         )
     )
-    assert (g.channel_id, g.url) == (-100123, "https://t.me/channel")
+    assert g.channels == (membership.Channel(-100123, "Channel <&>", "https://t.me/channel"),)
     b.get_chat.assert_awaited_once_with("@channel", request_timeout=10)
     b.get_chat_member.assert_awaited_once_with(-100123, 123456, request_timeout=10)
 
@@ -166,7 +205,7 @@ def test_private_channel_uses_explicit_or_existing_invite(url, metadata_url):
             b, Settings(_env_file=None, force_join_channel_id=-100123, force_join_channel_url=url)
         )
     )
-    assert g.url == (url or metadata_url)
+    assert g.channels[0].url == (url or metadata_url)
 
 
 def test_private_channel_without_invite_fails_clearly():
@@ -426,3 +465,128 @@ def test_real_dispatcher_blocks_both_paths_before_download_handlers(monkeypatch)
             await b.session.close()
 
     asyncio.run(scenario())
+
+
+def multi_bot(statuses):
+    """Bot whose get_chat_member answers per channel id (bot itself is always an admin)."""
+    b = bot()
+
+    async def get_chat(chat_id, **_):
+        number = {"@public": -100001}.get(chat_id, chat_id)
+        return NS(
+            id=number, type=ChatType.CHANNEL, title=f"Channel {number}", username=None, invite_link=None
+        )
+
+    async def get_chat_member(chat_id, user_id, **_):
+        if user_id == 123456:
+            return NS(status=ChatMemberStatus.ADMINISTRATOR, is_member=True)
+        return NS(status=statuses.get(chat_id, ChatMemberStatus.LEFT), is_member=False)
+
+    b.get_chat = AsyncMock(side_effect=get_chat)
+    b.get_chat_member = AsyncMock(side_effect=get_chat_member)
+    return b
+
+
+A = membership.Channel(-100001, "Alpha", "https://t.me/+alpha")
+B = membership.Channel(-100002, "Beta", "https://t.me/+beta")
+C = membership.Channel(-100003, "Gamma", "https://t.me/+gamma")
+
+
+def test_startup_validates_every_channel_and_matches_links_by_position():
+    b = multi_bot({})
+    settings = Settings(
+        _env_file=None,
+        force_join_channel_id="-100001,-100002",
+        force_join_channel_url="https://t.me/+one,https://t.me/+two",
+    )
+    g = asyncio.run(membership.MembershipMiddleware.configure(b, settings))
+    assert [(c.id, c.url) for c in g.channels] == [
+        (-100001, "https://t.me/+one"),
+        (-100002, "https://t.me/+two"),
+    ]
+    assert b.get_chat.await_count == 2
+
+
+def test_startup_names_the_private_channel_that_lacks_a_link():
+    settings = Settings(
+        _env_file=None, force_join_channel_id="-100001,-100002", force_join_channel_url="https://t.me/+one"
+    )
+    with pytest.raises(RuntimeError, match="-100002"):
+        asyncio.run(membership.MembershipMiddleware.configure(multi_bot({}), settings))
+
+
+def test_startup_rejects_username_and_id_of_the_same_channel():
+    settings = Settings(
+        _env_file=None,
+        force_join_channel_id="@public,-100001",
+        force_join_channel_url="https://t.me/+one,https://t.me/+one",
+    )
+    with pytest.raises(RuntimeError, match="more than once"):
+        asyncio.run(membership.MembershipMiddleware.configure(multi_bot({}), settings))
+
+
+def test_user_must_join_every_channel_and_sees_only_missing_ones():
+    b = multi_bot({-100001: ChatMemberStatus.MEMBER})
+    msg = message("https://youtu.be/abcdefghijk")
+    result, h = invoke(gate(A, B, C), msg, b)
+    assert result is None
+    h.assert_not_awaited()
+    body = msg.answer.call_args.args[0]
+    assert "Beta" in body and "Gamma" in body and "Alpha" not in body
+    assert captions.JOIN_REQUIRED_MANY in body
+    rows = msg.answer.call_args.kwargs["reply_markup"].inline_keyboard
+    assert [row[0].url for row in rows[:-1]] == ["https://t.me/+beta", "https://t.me/+gamma"]
+    assert rows[-1][0].callback_data == "force_join:42"
+
+
+def test_member_of_all_channels_is_allowed_after_concurrent_checks():
+    member = ChatMemberStatus.MEMBER
+    b = multi_bot({-100001: member, -100002: member, -100003: member})
+    result, h = invoke(gate(A, B, C), message(), b)
+    assert result == "handled"
+    assert b.get_chat_member.await_count == 3
+
+
+def test_single_remaining_channel_uses_singular_prompt():
+    b = multi_bot({-100001: ChatMemberStatus.MEMBER})
+    msg = message()
+    invoke(gate(A, B), msg, b)
+    body = msg.answer.call_args.args[0]
+    assert "Join our channel</b>" in body and "Beta" in body and captions.JOIN_REQUIRED in body
+    rows = msg.answer.call_args.kwargs["reply_markup"].inline_keyboard
+    assert rows[0][0].url == "https://t.me/+beta" and len(rows) == 2
+
+
+def test_check_lists_channels_still_missing():
+    b = multi_bot({-100002: ChatMemberStatus.MEMBER})
+    cq = callback()
+    _, h = invoke(gate(A, B, C), cq, b)
+    h.assert_not_awaited()
+    body = cq.message.edit_text.call_args.args[0]
+    assert captions.JOIN_NOT_FOUND_MANY in body and "Alpha" in body and "Gamma" in body and "Beta" not in body
+
+
+def test_one_failed_channel_lookup_fails_closed():
+    b = multi_bot({-100001: ChatMemberStatus.MEMBER, -100002: ChatMemberStatus.MEMBER})
+    original = b.get_chat_member.side_effect
+
+    async def flaky(chat_id, user_id, **kwargs):
+        if chat_id == -100002:
+            raise TimeoutError
+        return await original(chat_id, user_id, **kwargs)
+
+    b.get_chat_member.side_effect = flaky
+    msg = message()
+    _, h = invoke(gate(A, B), msg, b)
+    h.assert_not_awaited()
+    assert captions.JOIN_UNAVAILABLE in msg.answer.call_args.args[0]
+
+
+def test_leaving_any_channel_revokes_access():
+    member = ChatMemberStatus.MEMBER
+    statuses = {-100001: member, -100002: member}
+    b, g, h = multi_bot(statuses), gate(A, B), AsyncMock()
+    invoke(g, message(), b, h)
+    statuses[-100002] = ChatMemberStatus.LEFT
+    invoke(g, message(), b, h)
+    assert h.await_count == 1

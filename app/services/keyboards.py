@@ -82,10 +82,17 @@ def add_to_group_kb(bot_username: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[Btn(text="Add to a group ⤴️", url=url)]])
 
 
-def force_join_kb(url: str, user_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [Btn(text="Join channel ↗️", url=url)],
-            [Btn(text="✅ Check membership", callback_data=f"force_join:{user_id}")],
-        ]
-    )
+def force_join_kb(links: str | list[tuple[str, str]], user_id: int) -> InlineKeyboardMarkup:
+    """One join button per channel still to join (`(title, url)` pairs), then the check button."""
+    links = [("", links)] if isinstance(links, str) else list(links)
+    if len(links) == 1:
+        rows = [[Btn(text="Join channel ↗️", url=links[0][1])]]
+    else:
+        rows = [[Btn(text=f"Join {_short_title(title)} ↗️", url=url)] for title, url in links]
+    rows.append([Btn(text="✅ Check membership", callback_data=f"force_join:{user_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _short_title(title: str, limit: int = 32) -> str:
+    title = " ".join(title.split()) or "channel"
+    return title if len(title) <= limit else title[: limit - 1] + "…"

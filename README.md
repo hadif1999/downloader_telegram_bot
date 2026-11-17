@@ -105,31 +105,36 @@ and anything over 50 MB is shown as ❌.
 
 ## Configuration
 
-### Require users to join a channel
+### Require users to join channels
 
-Add the bot as an **administrator** of the channel, then configure `.env`:
+Add the bot as an **administrator** of every channel, then configure `.env`. Separate several
+channels with commas (up to 10); users must be members of **all** of them:
 
 ```dotenv
-FORCE_JOIN_CHANNEL_ID=-1001234567890
-# @channel_username is also accepted instead of the numeric ID.
-# Optional for public channels; use an existing invite link for a private channel:
-FORCE_JOIN_CHANNEL_URL=https://t.me/+your_invite_link
+FORCE_JOIN_CHANNEL_ID=-1001234567890,@public_channel,-1009876543210
+# Join links, matched to the IDs above by position. Leave a position empty for a public channel.
+FORCE_JOIN_CHANNEL_URL=https://t.me/+first_invite,,https://t.me/+third_invite
 ```
 
-Leave `FORCE_JOIN_CHANNEL_ID` empty to disable this feature. For a public channel, the join URL is
-derived from its username; you can leave `FORCE_JOIN_CHANNEL_URL` empty. A private channel needs an
-explicit invite URL unless Telegram already returns the bot's existing invite link. The bot does
-not create or revoke invite links automatically.
+A single channel works as before: `FORCE_JOIN_CHANNEL_ID=-1001234567890`. Numeric IDs and
+`@channel_username` entries can be mixed. Leave `FORCE_JOIN_CHANNEL_ID` empty to disable this
+feature. For a public channel, the join URL is derived from its username, so its URL position can
+stay empty (trailing empty positions can be omitted). A private channel needs an explicit invite
+URL unless Telegram already returns the bot's existing invite link. The bot does not create or
+revoke invite links automatically. Empty entries between commas, duplicate channels (including a
+username and the ID of the same channel), and more URLs than channels are rejected.
 
-Unjoined users see **Join channel** and **Check membership** buttons on `/start` or when trying to
-use a download link/button. Successful verification opens the welcome screen; users can then send
-their link again. Membership is checked before each interaction, including cached resends and old
-buttons, so leaving the channel removes access again. Downloads already accepted while the user
+Unjoined users see a **Join …** button for each channel they have not joined yet, plus **Check
+membership**, on `/start` or when trying to use a download link/button. All channels are checked
+concurrently; after a check, only the channels still missing are listed. Successful verification
+opens the welcome screen; users can then send their link again. Membership is checked before each
+interaction, including cached resends and old buttons, so leaving any channel removes access again. Downloads already accepted while the user
 was a member can finish. In groups, unrelated chatter is ignored and each membership-check button
 belongs to the user who requested it.
 
-An API failure blocks access and shows a retry message. An inaccessible channel, missing bot admin
-rights, or a private channel without a join link prevents startup with a clear configuration error.
+An API failure for any channel blocks access and shows a retry message. An inaccessible channel,
+missing bot admin rights, or a private channel without a join link prevents startup with a
+configuration error naming that channel.
 Only membership verification needs admin status; the gate does not require posting rights.
 Restart the bot process after changing these settings (or recreate the Compose `bot` service).
 
