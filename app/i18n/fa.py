@@ -80,8 +80,8 @@ TEXTS: dict[str, str] = {
     "{m}m {s:02}s": "{m} دقیقه و {s} ثانیه",
     "{h}h {m:02}m": "{h} ساعت و {m} دقیقه",
     # --- retries and stalls
-    "⏸ No data for {idle}, retrying after {limit}": "⏸ {idle} است داده‌ای نرسیده؛ تلاش دوباره پس از {limit}",
-    "⏸ No data for {idle}": "⏸ {idle} است داده‌ای نرسیده",
+    "⏸ No data for {idle}, retrying after {limit}": "⏸ {idle} هیچ داده‌ای نرسیده؛ تلاش دوباره بعد از {limit}",
+    "⏸ No data for {idle}": "⏸ {idle} هیچ داده‌ای نرسیده",
     "⚠️ <b>Connection problem</b>: {reason}.": "⚠️ <b>مشکل اتصال</b>: {reason}.",
     "⚠️ <b>Download interrupted</b>: {reason}.": "⚠️ <b>دانلود قطع شد</b>: {reason}.",
     "🔁 Retry <b>{retry}</b> of {retries} · {when}": "🔁 تلاش دوباره <b>{retry}</b> از {retries} · {when}",
@@ -91,12 +91,12 @@ TEXTS: dict[str, str] = {
     "🔁 Restarting, retry <b>{retry}</b> of {retries} · {when}": (
         "🔁 شروع دوباره، تلاش <b>{retry}</b> از {retries} · {when}"
     ),
-    "next try in {time}": "تلاش بعدی تا {time} دیگر",
+    "next try in {time}": "تلاش بعدی {time} دیگر",
     "reconnecting…": "در حال اتصال دوباره…",
     "♻️ Resuming from {size}, nothing is downloaded twice": (
-        "♻️ ادامه از {size}؛ هیچ بخشی دوباره دانلود نمی‌شود"
+        "♻️ ادامه از {size}؛ هیچ بخشی دوباره دانلود نمی‌شه"
     ),
-    "♻️ {size} already downloaded will be reused": "♻️ {size} دانلودشده دوباره استفاده می‌شود",
+    "♻️ {size} already downloaded will be reused": "♻️ {size} دانلودشده دوباره استفاده می‌شه",
     "🔁 Recovered after {n} retry": "🔁 پس از {n} تلاش دوباره، دانلود ادامه پیدا کرد",
     "🔁 Recovered after {n} retries": "🔁 پس از {n} تلاش دوباره، دانلود ادامه پیدا کرد",
     "a network error": "خطای شبکه",
@@ -111,8 +111,8 @@ TEXTS: dict[str, str] = {
         "🚫 <b>دانلود لغو شد</b>\nچیزی ارسال نشد. برای شروع دوباره، یکی از کیفیت‌های زیر رو انتخاب کن."
     ),
     "🚫 Download cancelled.": "🚫 دانلود لغو شد.",
-    "🛑 Cancelling… the download stops within a few seconds.": "🛑 در حال لغو… دانلود تا چند ثانیه‌ی دیگر متوقف می‌شود.",
-    "📤 Too late to cancel: the file is already being sent.": "📤 دیگه نمی‌شه لغو کرد: فایل در حال ارسال است.",
+    "🛑 Cancelling… the download stops within a few seconds.": "🛑 در حال لغو… دانلود تا چند ثانیه‌ی دیگه متوقف می‌شه.",
+    "📤 Too late to cancel: the file is already being sent.": "📤 دیگه نمی‌شه لغو کرد: فایل در حال ارساله.",
     "Only the person who started this download can cancel it.": "فقط کسی که این دانلود رو شروع کرده می‌تونه لغوش کنه.",
     # --- errors
     "⏳ You already have a download in progress. Please wait until it finishes.": (
