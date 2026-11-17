@@ -25,6 +25,16 @@ class GalleryItem:
 
 
 @dataclass
+class CollectionEntry:
+    """One item of a playlist / album / set: downloaded later through its own link."""
+
+    url: str
+    title: str
+    duration: int | None = None
+    uploader: str | None = None
+
+
+@dataclass
 class MediaInfo:
     platform: str
     id: str
@@ -44,9 +54,11 @@ class MediaInfo:
     description: str = ""
     formats: list[FormatOption] = field(default_factory=list)
     audio_tracks: list[AudioTrack] = field(default_factory=list)
-    # "video" (resolution menu), "audio" (mp3 only) or "gallery" (photos/videos sent as an album)
+    # "video" (resolution menu), "audio" (mp3 only), "gallery" (photos/videos sent as an album) or
+    # "collection" (playlist / album / set: each entry is downloaded and sent on its own)
     kind: str = "video"
     items: list[GalleryItem] = field(default_factory=list)  # gallery entries
+    entries: list[CollectionEntry] = field(default_factory=list)  # collection entries
     extra: dict = field(default_factory=dict)  # platform-specific data (e.g. direct media url)
 
     def to_dict(self) -> dict:
@@ -58,6 +70,7 @@ class MediaInfo:
         d["formats"] = [FormatOption(**f) for f in d.get("formats", [])]
         d["audio_tracks"] = [AudioTrack(**a) for a in d.get("audio_tracks", [])]
         d["items"] = [GalleryItem(**i) for i in d.get("items", [])]
+        d["entries"] = [CollectionEntry(**e) for e in d.get("entries", [])]
         return cls(**d)
 
     def format(self, key: str) -> FormatOption | None:

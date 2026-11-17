@@ -48,7 +48,7 @@ def resolve(platform_name: str, media_id: str, url: str | None = None) -> MediaI
 
 def single_choice(info: MediaInfo) -> str | None:
     """Format to start right away when the menu would have only one sensible button."""
-    if info.audio_tracks:
+    if info.audio_tracks or info.kind == "collection":
         return None
     if info.kind == "gallery":
         return "all"
@@ -61,7 +61,30 @@ def single_choice(info: MediaInfo) -> str | None:
     return video[0].key if len(video) == 1 else None
 
 
+def preset_choice(info: MediaInfo, preset: str) -> str | None:
+    """Format for one batch item under the batch's quality preset (batches.PRESETS: a video height
+    cap or "mp3"); None when nothing fits the
+    upload limit. Audio-only media is always MP3 and photo posts are sent whole."""
+    if info.kind == "gallery":
+        return "all"
+    if info.kind == "collection":
+        return None
+    if info.kind == "audio" or preset == "mp3":
+        return "mp3" if info.format("mp3") else None
+    limit = get_settings().max_file_bytes
+    video = [f for f in info.formats if f.key != "mp3" and (f.size is None or f.size <= limit)]
+    if not video:
+        return None
+    cap = int(preset) if preset.isdigit() else 1080
+    below = [f for f in video if (f.height or 0) <= cap]
+    if below:
+        return max(below, key=lambda f: f.height or 0).key
+    return min(video, key=lambda f: f.height or 0).key
+
+
 def valid_choice(info: MediaInfo, fmt: str, lang: str | None) -> bool:
+    if info.kind == "collection":
+        return False
     if info.kind == "gallery":
         return fmt == "all" and not lang
     return bool(info.format(fmt)) and (not lang or any(t.lang == lang for t in info.audio_tracks))

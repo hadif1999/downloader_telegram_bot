@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
-from app.models import DownloadResult, FormatOption, MediaInfo
+from app.config import get_settings
+from app.models import CollectionEntry, DownloadResult, FormatOption, MediaInfo
 from app.platforms.base import ProgressCb
-from app.platforms.common import CRAWLER_UA, download_file, fetch, og_tags, url_key
+from app.platforms.common import BROWSER_HEADERS, CRAWLER_UA, download_file, fetch, og_tags, url_key
 from app.platforms.downloader import YoutubeDL
 from app.platforms.network import on_domains
 from app.platforms.youtube import YouTube
@@ -15,6 +17,47 @@ from app.platforms.ytdlp import UserError, YtDlpPlatform
 
 LINK_RE = re.compile(r"open\.spotify\.com/(?:intl-[\w-]+/)?(track|album|playlist|episode|artist)/(\w+)", re.I)
 SHORT_RE = re.compile(r"spotify\.link/\w+", re.I)
+NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.S)
+TRACK_URI_RE = re.compile(r"spotify:track:(\w+)")
+
+
+def parse_embed(page: str) -> dict:
+    """The public embed page of an album/playlist carries its track list as Next.js page data:
+    entity = {title, subtitle (artist/owner), trackList: [{uri, title, subtitle, duration (ms)}]}."""
+    m = NEXT_DATA_RE.search(page)
+    if not m:
+        raise UserError("Couldn't read this Spotify album or playlist.")
+    try:
+        entity = json.loads(m.group(1))["props"]["pageProps"]["state"]["data"]["entity"]
+    except (ValueError, KeyError, TypeError):
+        raise UserError("Couldn't read this Spotify album or playlist.") from None
+    if not isinstance(entity, dict):
+        raise UserError("Couldn't read this Spotify album or playlist.")
+    return entity
+
+
+def embed_entries(entity: dict) -> list[CollectionEntry]:
+    entries = []
+    for track in entity.get("trackList") or []:
+        m = TRACK_URI_RE.fullmatch(str((track or {}).get("uri") or ""))
+        if not m or track.get("isPlayable") is False:
+            continue  # podcast episodes and region-locked tracks
+        duration = track.get("duration")
+        entries.append(
+            CollectionEntry(
+                url=f"https://open.spotify.com/track/{m.group(1)}",
+                title=" ".join(str(track.get("title") or "").split())[:200] or m.group(1),
+                duration=int(duration) // 1000 if isinstance(duration, int | float) and duration else None,
+                uploader=" ".join(str(track.get("subtitle") or "").split()) or None,
+            )
+        )
+    return entries
+
+
+def embed_cover(entity: dict) -> str | None:
+    images = ((entity.get("visualIdentity") or {}).get("image")) or []
+    images = [i for i in images if isinstance(i, dict) and i.get("url")]
+    return max(images, key=lambda i: i.get("maxWidth") or 0)["url"] if images else None
 
 
 def parse_track(tags: dict[str, str]) -> dict:
@@ -62,6 +105,9 @@ def tag_mp3(path: Path, meta: dict, cover: Path | None) -> None:
     tags.save(path)
 
 
+COLLECTIONS = ("album", "playlist")
+
+
 class Spotify(YtDlpPlatform):
     name, title, emoji = "sp", "Spotify", "🟢"
 
@@ -77,10 +123,21 @@ class Spotify(YtDlpPlatform):
         return url_key(url) if SHORT_RE.search(url) else None  # spotify.link short link
 
     def extract(self, url: str) -> MediaInfo:
-        final, page = fetch(url, {"User-Agent": CRAWLER_UA})
+        page = None
+        final = url
+        if not (on_domains(url, ("open.spotify.com",)) and LINK_RE.search(url)):
+            final, page = fetch(url, {"User-Agent": CRAWLER_UA})  # spotify.link short link
         m = LINK_RE.search(final)
-        if not on_domains(final, ("open.spotify.com",)) or not m or m.group(1) != "track":
-            raise UserError("Only single Spotify tracks are supported (not albums or playlists).")
+        if (
+            not on_domains(final, ("open.spotify.com",))
+            or not m
+            or m.group(1) not in COLLECTIONS + ("track",)
+        ):
+            raise UserError("Only Spotify tracks, albums and playlists are supported.")
+        if m.group(1) in COLLECTIONS:
+            return self.extract_collection(url, m.group(1), m.group(2))
+        if page is None:
+            final, page = fetch(final, {"User-Agent": CRAWLER_UA})
         meta = parse_track(og_tags(page))
         if not meta["title"]:
             raise UserError("Couldn't read this Spotify track.")
@@ -97,6 +154,24 @@ class Spotify(YtDlpPlatform):
             formats=[FormatOption("mp3", "MP3", None)],
             kind="audio",
             extra=meta,
+        )
+
+    def extract_collection(self, url: str, kind: str, spotify_id: str) -> MediaInfo:
+        _, page = fetch(f"https://open.spotify.com/embed/{kind}/{spotify_id}", BROWSER_HEADERS)
+        entity = parse_embed(page)
+        entries = embed_entries(entity)
+        if not entries:
+            raise UserError("No downloadable items found in this playlist.")
+        return MediaInfo(
+            platform=self.name,
+            id=self.match(url) or spotify_id,
+            url=f"https://open.spotify.com/{kind}/{spotify_id}",
+            title=" ".join(str(entity.get("title") or entity.get("name") or "").split())[:200] or "Spotify",
+            uploader=" ".join(str(entity.get("subtitle") or "").split()) or None,
+            thumbnail=embed_cover(entity),
+            kind="collection",
+            entries=entries[: get_settings().collection_max_items],
+            extra={"total": len(entries), "audio": True},
         )
 
     def find_on_youtube(self, meta: dict) -> str:

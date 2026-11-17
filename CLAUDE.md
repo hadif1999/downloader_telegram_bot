@@ -25,6 +25,7 @@ retries, cancel, disk retention: the invariants the tests protect), `docs/DEPLOY
 | Link -> format card, callbacks, Cancel button, `/language` | `app/bot/handlers/`, `app/bot/language.py` |
 | Required channels (`FORCE_JOIN_CHANNEL_ID`, comma list) | `app/bot/membership.py` |
 | Queueing, cached re-sends | `app/services/jobs.py` |
+| Playlists / albums / several links: batch store, summary card, chain | `app/services/batches.py`, `app/bot/handlers/batch.py`, `advance_batch` in `app/worker/tasks.py` |
 | Celery task: download, live progress, retries, upload | `app/worker/tasks.py` |
 | Progress card rendering (thread-safe Monitor) | `app/services/progress.py` |
 | Request state machine in Redis (Lua), cancel flags | `app/services/requests.py` |

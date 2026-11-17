@@ -163,17 +163,11 @@ TEXTS: dict[str, str] = {
     "Couldn't read every item in this post. Please try again later.": (
         "خواندن همه‌ی موارد این پست ممکن نشد. لطفاً بعداً دوباره امتحان کن."
     ),
-    "SoundCloud sets support up to 50 tracks. Please send individual track links.": (
-        "مجموعه‌های SoundCloud حداکثر 50 آهنگ پشتیبانی می‌شوند. لطفاً لینک آهنگ‌ها رو جداگانه بفرست."
+    "No downloadable items found in this playlist.": "در این پلی‌لیست مورد قابل دانلودی پیدا نشد.",
+    "Only Spotify tracks, albums and playlists are supported.": (
+        "فقط آهنگ، آلبوم و پلی‌لیست‌های Spotify پشتیبانی می‌شوند."
     ),
-    "No downloadable tracks found in this SoundCloud set.": "در این مجموعه‌ی SoundCloud آهنگ قابل دانلودی پیدا نشد.",
-    "Couldn't read every track in this SoundCloud set. Please try again later.": (
-        "خواندن همه‌ی آهنگ‌های این مجموعه‌ی SoundCloud ممکن نشد. لطفاً بعداً دوباره امتحان کن."
-    ),
-    "A track in this SoundCloud set is no longer available.": "یکی از آهنگ‌های این مجموعه‌ی SoundCloud دیگر در دسترس نیست.",
-    "Only single Spotify tracks are supported (not albums or playlists).": (
-        "فقط آهنگ‌های تکی Spotify پشتیبانی می‌شوند (نه آلبوم یا پلی‌لیست)."
-    ),
+    "Couldn't read this Spotify album or playlist.": "خواندن این آلبوم یا پلی‌لیست Spotify ممکن نشد.",
     "Couldn't read this Spotify track.": "خواندن این آهنگ Spotify ممکن نشد.",
     "Couldn't find this track on YouTube.": "این آهنگ در یوتیوب پیدا نشد.",
     "This Threads post has no photos or videos.": "این پست Threads عکس یا ویدیویی ندارد.",
@@ -204,4 +198,47 @@ TEXTS: dict[str, str] = {
     "Join {title} ↗️": "عضویت در {title} ↗️",
     "✅ Check membership": "✅ بررسی عضویت",
     "Send /start to check your own membership.": "برای بررسی عضویت خودت، /start رو بفرست.",
+    # --- playlists, albums and messages with several links
+    "🔎 Reading {n} links… {done} of {n} done": "🔎 در حال بررسی {n} لینک… {done} از {n} انجام شد",
+    "🧺 <b>{n} links</b>": "🧺 <b>{n} لینک</b>",
+    "🖼 {n} post": "🖼 {n} پست",
+    "🖼 {n} posts": "🖼 {n} پست",
+    "<i>Only the first {shown} of {total} items are offered.</i>": (
+        "<i>فقط {shown} مورد اول از {total} مورد قابل انتخاب است.</i>"
+    ),
+    "…and {n} more": "…و {n} مورد دیگر",
+    "⚠️ Couldn't read {n} link:": "⚠️ خواندن {n} لینک ممکن نشد:",
+    "⚠️ Couldn't read {n} links:": "⚠️ خواندن {n} لینک ممکن نشد:",
+    "🔗 Skipped {n} other link(s): not supported, or over the limit.": (
+        "🔗 {n} لینک دیگر نادیده گرفته شد: پشتیبانی نمی‌شوند یا بیش از حد مجاز بودند."
+    ),
+    "✅ <b>{n}</b> of {total} selected": "✅ <b>{n}</b> از {total} مورد انتخاب شده",
+    "Quality: {quality}": "کیفیت: {quality}",
+    "They are downloaded and sent one by one. Confirm below ⤵️": (
+        "موارد یکی‌یکی دانلود و ارسال می‌شوند. از دکمه‌های زیر تأیید کن ⤵️"
+    ),
+    "⚠️ Nothing to download in this message.": "⚠️ در این پیام چیزی برای دانلود پیدا نشد.",
+    "Tap an item to include it or leave it out.": "روی هر مورد بزن تا انتخاب یا حذف بشه.",
+    "Page {page} of {pages} · {n} of {total} selected": "صفحه‌ی {page} از {pages} · {n} از {total} انتخاب شده",
+    "📥 Download {n}": "📥 دانلود {n} مورد",
+    "☑️ Choose items": "☑️ انتخاب موارد",
+    "✖️ Cancel": "✖️ لغو",
+    "☑️ Select all": "☑️ انتخاب همه",
+    "⬜ Select none": "⬜ حذف همه",
+    "✔️ Done": "✔️ تأیید",
+    "⏹ Stop after this item": "⏹ توقف بعد از این مورد",
+    "▶️ <b>Item {n} of {total}</b>": "▶️ <b>مورد {n} از {total}</b>",
+    "Now: {title}": "در حال انجام: {title}",
+    "⏹ Stopping after the current item…": "⏹ بعد از مورد فعلی متوقف می‌شود…",
+    "<i>Each item shows its own progress card below.</i>": "<i>پیشرفت هر مورد در پیام جداگانه‌ای در پایین نمایش داده می‌شود.</i>",
+    "✅ <b>Done</b>: {sent} of {total} sent": "✅ <b>تمام شد</b>: {sent} از {total} مورد ارسال شد",
+    "⏹ <b>Stopped</b>: {sent} of {total} sent": "⏹ <b>متوقف شد</b>: {sent} از {total} مورد ارسال شد",
+    "cancelled": "لغو شد",
+    "{n} item(s) were not started.": "{n} مورد شروع نشد.",
+    "🚫 Cancelled. Nothing was downloaded.": "🚫 لغو شد. چیزی دانلود نشد.",
+    "Only the person who sent these links can use these buttons.": (
+        "فقط کسی که این لینک‌ها رو فرستاده می‌تونه از این دکمه‌ها استفاده کنه."
+    ),
+    "This list has already started downloading.": "دانلود این فهرست قبلاً شروع شده.",
+    "Select at least one item first.": "اول حداقل یک مورد رو انتخاب کن.",
 }

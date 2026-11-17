@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     max_source_mb: int = Field(default=4096, ge=1)
     task_time_limit: int = Field(default=60 * 60, ge=120, le=24 * 3600)
     queue_ttl: int = Field(default=24 * 3600, ge=60, le=7 * 24 * 3600)
+    # Playlists, albums and sets: at most this many items are offered (the rest are listed as cut).
+    collection_max_items: int = Field(default=50, ge=1, le=200)
+    # Links read from one message; more are ignored with a note on the summary card.
+    message_max_links: int = Field(default=10, ge=1, le=20)
     download_dir: Path = Path("/downloads")
     # Parallel connections per file (IDM/aria2-style segmented downloads). Connections are added one
     # at a time while they still raise the speed; 1 downloads over a single connection.

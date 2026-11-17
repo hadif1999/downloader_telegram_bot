@@ -43,15 +43,46 @@ UX reference: [docs/screenshots](docs/screenshots).
 
 When there is nothing to choose (one quality, a photo post, a track), the download starts right away
 without the card. Photo posts and carousels arrive as Telegram albums.
-SoundCloud sets arrive as audio albums of up to ten tracks per batch (a final single track is sent
-individually). Empty, incomplete, or larger-than-50-track sets fail explicitly instead of silently
-dropping tracks. Each track retains the normal source and upload size limits.
+
+### Playlists, albums and several links
+
+A **playlist or album** (YouTube / YouTube Music playlists and albums, Spotify albums and playlists,
+SoundCloud sets), or a message with **several links** (up to `MESSAGE_MAX_LINKS`, 10), opens one
+summary card instead of the format menu:
+
+```
+💿 Global Warming
+🟢 Spotify · 👤 Pitbull
+🎵 18 tracks · ⏱ 52:31
+
+1. Global Warming (feat. Sensato) · 1:25
+2. Don't Stop the Party (feat. TJR) · 3:26
+…and 16 more
+
+✅ 18 of 18 selected
+They are downloaded and sent one by one. Confirm below ⤵️
+[1080p] [✅ 720p] [480p] [🎵 MP3]     (only when there are videos)
+[📥 Download 18] [☑️ Choose items]
+[✖️ Cancel]
+```
+
+- **Quality** is one preset for the whole batch: each video gets the highest format at or below it
+  that fits the upload limit (or the smallest one if none is that low). Music is always MP3 and
+  photo posts are sent whole.
+- **☑️ Choose items** opens a checklist, 8 items per page, with select all / none.
+- Links in the message that can't be read are listed with the reason; unsupported links and links
+  over the limit are counted. A collection offers its first `COLLECTION_MAX_ITEMS` (50) entries.
+- After **Download**, the card tracks the batch (`▶️ Item 3 of 18`, sent / failed / skipped
+  counts, the current title) with **⏹ Stop after this item**. Each item gets the usual live
+  progress card with its own Cancel button. Items already sent before come straight from the
+  Telegram file cache. The card ends with a summary listing every item that failed and why.
+- Only the person who sent the links can press these buttons, which matters in groups.
 
 ## Platforms
 
 | Platform | How | Notes |
 |----------|-----|-------|
-| YouTube | yt-dlp + bgutil PO-token provider | resolutions, dubbed audio tracks, MP3 |
+| YouTube | yt-dlp + bgutil PO-token provider | resolutions, dubbed audio tracks, MP3, playlists and YouTube Music albums |
 | Instagram | yt-dlp (reels/videos), gallery-dl (photos, carousels) | most content needs `cookies/instagram.txt` |
 | TikTok | yt-dlp (videos), gallery-dl (photo slideshows) | |
 | Pinterest | yt-dlp (video pins), gallery-dl / OpenGraph (image pins) | `pin.it` short links work |
@@ -60,8 +91,8 @@ dropping tracks. Each track retains the normal source and upload size limits.
 | VK | yt-dlp (videos/clips), gallery-dl (wall photos) | |
 | Facebook | yt-dlp (videos/reels), gallery-dl (photos), OpenGraph | many posts need `cookies/facebook.txt` |
 | Threads | page's embedded post JSON (no library supports it) | videos, photos, carousels of public posts |
-| SoundCloud | yt-dlp | tracks and sets of up to 50 tracks, sent as MP3 with tags and artwork |
-| Spotify | track metadata from the page, audio matched on YouTube by duration | DRM: Spotify audio itself can't be downloaded. Single tracks only |
+| SoundCloud | yt-dlp | tracks and sets, sent as MP3 with tags and artwork |
+| Spotify | track metadata from the page (albums/playlists: the public embed page's track list), audio matched on YouTube by duration | DRM: Spotify audio itself can't be downloaded |
 
 Every platform lives in `app/platforms/`: generic yt-dlp sites are a few lines in `sites.py`
 (`YtDlpPlatform` with optional `gallery` / `opengraph` fallbacks); Threads and Spotify are custom.

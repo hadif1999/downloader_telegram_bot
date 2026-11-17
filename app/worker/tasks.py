@@ -16,7 +16,7 @@ from app.config import get_settings
 from app.platforms import registry
 from app.platforms.common import describe, download_file, retry_delay
 from app.platforms.ytdlp import TooLarge, UserError, retryable
-from app.services import cache, captions, keyboards, media, progress, requests, storage
+from app.services import batches, cache, captions, jobs, keyboards, media, progress, requests, storage
 from app.services.delivery import CheckpointError, Journal, edit_status, local_file, send_gallery, send_media
 from app.services.errors import user_message
 from app.services.telegram import make_bot
@@ -68,9 +68,21 @@ def download_estimate(info, fmt: str) -> int:
 
 @celery.task(bind=True, name="download_media")
 def download_media(
-    self, chat_id, msg_id, is_caption, platform, media_id, fmt, lang, user_id, reply_to=None, ui_language=None
+    self,
+    chat_id,
+    msg_id,
+    is_caption,
+    platform,
+    media_id,
+    fmt,
+    lang,
+    user_id,
+    reply_to=None,
+    ui_language=None,
+    batch=None,
 ):
     i18n.use(ui_language)  # the requester's language for every status edit of this task
+    retrying, failure = False, None
     try:
         return asyncio.run(
             _run(
@@ -79,7 +91,121 @@ def download_media(
         )
     except requests.LeaseBusy as error:
         # Redelivery can race a live original. Wait for its completion or lease expiry.
+        retrying = True
         raise self.retry(exc=error, countdown=30, max_retries=get_settings().queue_ttl // 30 + 1) from error
+    except Exception as error:
+        failure = error
+        raise
+    finally:
+        if batch and not retrying:
+            # The user lease is released by now: record the item and start the next one.
+            finish_batch_item(batch[0], int(batch[1]), self.request.id, user_id, failure)
+
+
+OUTCOMES = {"done": batches.SENT, "cancelled": batches.SKIPPED, "uncertain": batches.UNCERTAIN}
+
+
+def finish_batch_item(batch_id, index, request_id, user_id, failure=None) -> None:
+    try:
+        phase = requests.load(request_id, user_id).get("phase")
+        code = OUTCOMES.get(phase or "", batches.FAILED)
+        reason = ""
+        if code == batches.FAILED:
+            reason = user_message(failure) if failure else captions.FAILED
+        elif code == batches.UNCERTAIN:
+            reason = captions.UNCERTAIN
+        batches.record(batch_id, index, code, reason)
+    except Exception:
+        log.exception("couldn't record batch item: batch=%s index=%s", batch_id, index)
+    try:
+        advance_batch.apply_async((batch_id, index), retry=False)
+    except Exception:
+        log.exception("couldn't continue batch: batch=%s after=%s", batch_id, index)
+
+
+@celery.task(bind=True, name="advance_batch")
+def advance_batch(self, batch_id, after):
+    """Start the next selected item of a batch (and keep going past items served from cache or
+    failing right away). The queued item's download_media calls this again when it ends."""
+    try:
+        return asyncio.run(_advance(batch_id, int(after)))
+    except batches.Busy as error:
+        # The user started another download in between: try the same item again shortly.
+        raise self.retry(exc=error, countdown=20, max_retries=get_settings().queue_ttl // 20 + 1) from error
+
+
+async def _advance(batch_id: str, after: int) -> None:
+    batch = await asyncio.to_thread(batches.load, batch_id)
+    if batch is None:
+        return
+    i18n.use(batch.lang)
+    bot = make_bot(for_upload=True)
+
+    async def draw(current: int | None = None, final: bool = False):
+        fresh = await asyncio.to_thread(batches.load, batch_id) or batch
+        if final:
+            text, markup = captions.batch_done(fresh), None
+        else:
+            text, markup = captions.batch_progress(fresh, current), keyboards.batch_running_kb(fresh)
+        await edit_status(bot, fresh.chat, fresh.card, text, False, markup)
+
+    try:
+        while True:
+            index = await asyncio.to_thread(batches.begin, batch_id, after)
+            if index == batches.FINISHED:
+                await draw(final=True)
+                return
+            if index < 0:
+                return  # another advance owns this step, or the batch is gone
+            item = batch.items[index]
+            await draw(index)
+            queued = False
+            try:
+                info = await asyncio.to_thread(media.resolve, item.platform, item.media_id, item.url)
+                if info is None:
+                    raise UserError(captions.EXPIRED)
+                fmt = media.preset_choice(info, batch.quality)
+                if fmt is None:
+                    error = captions.TOO_BIG
+                else:
+                    error, queued = await jobs.start_download(
+                        bot,
+                        info,
+                        fmt,
+                        None,
+                        chat_id=batch.chat,
+                        user_id=batch.user,
+                        reply_to=batch.reply_to,
+                        batch=(batch_id, index),
+                    )
+            except Exception as failure:
+                log.warning(
+                    "batch item failed before queueing: batch=%s index=%s error=%s",
+                    batch_id,
+                    index,
+                    type(failure).__name__,
+                )
+                error = user_message(failure)
+            if queued:
+                return  # its download_media continues the batch
+            if error == captions.BUSY:
+                await asyncio.to_thread(batches.release, batch_id, index, after)
+                raise batches.Busy
+            if error is None:
+                code = batches.CACHED
+            elif error == captions.UNCERTAIN:
+                code = batches.UNCERTAIN
+            elif error == captions.TOO_BIG:
+                code = batches.SKIPPED
+            else:
+                code = batches.FAILED
+            await asyncio.to_thread(batches.record, batch_id, index, code, error or "")
+            after = index
+    finally:
+        try:
+            await bot.session.close()
+        except Exception:
+            log.exception("worker bot session cleanup failed: batch=%s", batch_id)
 
 
 async def _run(

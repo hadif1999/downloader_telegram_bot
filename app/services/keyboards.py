@@ -127,3 +127,88 @@ def language_kb(current: str) -> InlineKeyboardMarkup:
             for code in LANGUAGES
         ]
     )
+
+
+BATCH = "bt"
+
+
+def batch_cb(batch_id: str, op: str, arg: str | int = "") -> str:
+    data = SEP.join([BATCH, batch_id, op, str(arg)])
+    assert len(data.encode()) <= 64, data
+    return data
+
+
+def batch_summary_kb(batch) -> InlineKeyboardMarkup:
+    from app.services.batches import PRESETS
+    from app.services.captions import quality_label
+
+    rows: list[list[Btn]] = []
+    if not batch.meta.get("audio_only"):
+        rows.append(
+            [
+                Btn(
+                    text=("✅ " if batch.quality == preset else "") + quality_label(preset),
+                    callback_data=batch_cb(batch.id, "q", preset),
+                )
+                for preset in PRESETS
+            ]
+        )
+    rows.append(
+        [
+            Btn(text=t("📥 Download {n}", n=len(batch.chosen)), callback_data=batch_cb(batch.id, "go")),
+            Btn(text=t("☑️ Choose items"), callback_data=batch_cb(batch.id, "p", 0)),
+        ]
+    )
+    rows.append([Btn(text=t("✖️ Cancel"), callback_data=batch_cb(batch.id, "x"))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def batch_pages(batch) -> int:
+    from app.services.batches import PICKER_PAGE
+
+    return max(1, -(-len(batch.items) // PICKER_PAGE))
+
+
+def batch_picker_kb(batch, page: int) -> InlineKeyboardMarkup:
+    from app.services.batches import PICKER_PAGE
+    from app.services.captions import _short, human_duration
+
+    pages = batch_pages(batch)
+    page = min(max(page, 0), pages - 1)
+    rows: list[list[Btn]] = []
+    for index in range(page * PICKER_PAGE, min(len(batch.items), (page + 1) * PICKER_PAGE)):
+        item = batch.items[index]
+        mark = "✅" if batch.selected[index : index + 1] == "1" else "⬜"
+        duration = f" · {human_duration(item.duration)}" if item.duration else ""
+        rows.append(
+            [
+                Btn(
+                    text=f"{mark} {index + 1}. {_short(item.title, 40)}{duration}",
+                    callback_data=batch_cb(batch.id, "t", index),
+                )
+            ]
+        )
+    if pages > 1:
+        rows.append(
+            [
+                Btn(text="◀️", callback_data=batch_cb(batch.id, "p", (page - 1) % pages)),
+                Btn(text=f"{page + 1}/{pages}", callback_data=batch_cb(batch.id, "p", page)),
+                Btn(text="▶️", callback_data=batch_cb(batch.id, "p", (page + 1) % pages)),
+            ]
+        )
+    rows.append(
+        [
+            Btn(text=t("☑️ Select all"), callback_data=batch_cb(batch.id, "all", page)),
+            Btn(text=t("⬜ Select none"), callback_data=batch_cb(batch.id, "none", page)),
+        ]
+    )
+    rows.append([Btn(text=t("✔️ Done"), callback_data=batch_cb(batch.id, "back"))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def batch_running_kb(batch) -> InlineKeyboardMarkup | None:
+    if batch.phase != "running":
+        return None
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[Btn(text=t("⏹ Stop after this item"), callback_data=batch_cb(batch.id, "stop"))]]
+    )

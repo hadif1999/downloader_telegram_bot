@@ -241,3 +241,169 @@ def language_menu(current: str) -> str:
 
 def language_changed() -> str:
     return t("✅ Language changed to English.") + "\n\n" + language_hint()
+
+
+# --- batches: playlists, albums, sets and messages with several links
+
+BATCH_LIST_LINES = 10  # items listed on the summary card
+
+
+def _plain(html: str, limit: int) -> str:
+    """A status text (may contain HTML) as a short escaped line."""
+    return escape(_short(unescape(re.sub(r"<[^>]*>", "", html)), limit))
+
+
+def _counts(batch) -> str:
+    """Item counts by kind: '🎬 3 videos · 🎵 2 tracks'."""
+    videos = sum(i.kind == "video" for i in batch.items)
+    tracks = sum(i.kind == "audio" for i in batch.items)
+    posts = sum(i.kind == "gallery" for i in batch.items)
+    parts = [t("🎬 {n} video" if videos == 1 else "🎬 {n} videos", n=videos)] if videos else []
+    parts += [t("🎵 {n} track" if tracks == 1 else "🎵 {n} tracks", n=tracks)] if tracks else []
+    parts += [t("🖼 {n} post" if posts == 1 else "🖼 {n} posts", n=posts)] if posts else []
+    seconds = sum(i.duration or 0 for i in batch.items)
+    if seconds:
+        parts.append(f"⏱ {human_duration(seconds)}")
+    return " · ".join(parts)
+
+
+def batch_title(batch) -> str:
+    meta = batch.meta
+    if meta.get("kind") == "collection":
+        icon = "💿" if meta.get("audio") else "📃"
+        return f"{icon} <b>{escape(_short(meta.get('title') or '', 120))}</b>"
+    return t("🧺 <b>{n} links</b>", n=meta.get("links", len(batch.items)))
+
+
+def batch_header(batch) -> str:
+    meta = batch.meta
+    lines = [batch_title(batch)]
+    if meta.get("kind") == "collection":
+        source = f"{meta.get('emoji', '')} {escape(meta.get('source', ''))}".strip()
+        if meta.get("uploader"):
+            source += f" · 👤 {escape(_short(meta['uploader'], 60))}"
+        lines.append(source)
+    lines.append(_counts(batch))
+    if meta.get("total", 0) > len(batch.items) and meta.get("kind") == "collection":
+        lines.append(
+            t(
+                "<i>Only the first {shown} of {total} items are offered.</i>",
+                shown=len(batch.items),
+                total=meta["total"],
+            )
+        )
+    return "\n".join(line for line in lines if line)
+
+
+def batch_item_line(index: int, item, selected: bool = True) -> str:
+    duration = f" · {human_duration(item.duration)}" if item.duration else ""
+    line = f"{index + 1}. {escape(_short(item.title, 60))}{duration}"
+    return line if selected else f"<s>{line}</s>"
+
+
+def quality_label(preset: str) -> str:
+    return "🎵 MP3" if preset == "mp3" else f"{preset}p"
+
+
+def batch_summary(batch) -> str:
+    meta = batch.meta
+    lines = [batch_header(batch), ""]
+    for index, item in enumerate(batch.items[:BATCH_LIST_LINES]):
+        lines.append(batch_item_line(index, item, batch.selected[index : index + 1] == "1"))
+    if len(batch.items) > BATCH_LIST_LINES:
+        lines.append(t("…and {n} more", n=len(batch.items) - BATCH_LIST_LINES))
+    failed = meta.get("failed") or []
+    if failed:
+        lines += [
+            "",
+            t(
+                "⚠️ Couldn't read {n} link:" if len(failed) == 1 else "⚠️ Couldn't read {n} links:",
+                n=len(failed),
+            ),
+        ]
+        lines += [f"• {escape(_short(label, 50))}: {_plain(reason, 120)}" for label, reason in failed[:10]]
+    if meta.get("skipped"):
+        lines += ["", t("🔗 Skipped {n} other link(s): not supported, or over the limit.", n=meta["skipped"])]
+    selected = len(batch.chosen)
+    status = t("✅ <b>{n}</b> of {total} selected", n=selected, total=len(batch.items))
+    if not meta.get("audio_only"):
+        status += " · " + t("Quality: {quality}", quality=quality_label(batch.quality))
+    lines += ["", status, t("They are downloaded and sent one by one. Confirm below ⤵️")]
+    return "\n".join(lines)
+
+
+def batch_picker(batch, page: int, pages: int) -> str:
+    return "\n".join(
+        [
+            batch_title(batch),
+            "",
+            t("Tap an item to include it or leave it out."),
+            t(
+                "Page {page} of {pages} · {n} of {total} selected",
+                page=page + 1,
+                pages=pages,
+                n=len(batch.chosen),
+                total=len(batch.items),
+            ),
+        ]
+    )
+
+
+def _tally(batch) -> str:
+    from app.services import batches
+
+    sent = batch.count(batches.SENT, batches.CACHED)
+    parts = [f"✅ {sent}", f"⚠️ {batch.count(batches.FAILED)}", f"⏭ {batch.count(batches.SKIPPED)}"]
+    if uncertain := batch.count(batches.UNCERTAIN):
+        parts.append(f"❔ {uncertain}")
+    return " · ".join(parts)
+
+
+def batch_progress(batch, current: int | None = None) -> str:
+    from app.services.progress import bar
+
+    chosen = batch.chosen
+    total = len(chosen) or 1
+    finished = sum(1 for i in chosen if i in batch.results)
+    position = chosen.index(current) + 1 if current in chosen else min(finished + 1, len(chosen))
+    lines = [
+        batch_title(batch),
+        "",
+        t("▶️ <b>Item {n} of {total}</b>", n=position, total=len(chosen)),
+        f"<code>{bar(finished / total)}</code> {finished * 100 // total}%",
+        _tally(batch),
+    ]
+    if current is not None and 0 <= current < len(batch.items):
+        lines.append(t("Now: {title}", title=escape(_short(batch.items[current].title, 80))))
+    if batch.phase == "stopping":
+        lines.append(t("⏹ Stopping after the current item…"))
+    lines += ["", t("<i>Each item shows its own progress card below.</i>")]
+    return "\n".join(lines)
+
+
+def batch_done(batch) -> str:
+    from app.services import batches
+
+    chosen = batch.chosen
+    sent = batch.count(batches.SENT, batches.CACHED)
+    if batch.phase == "stopped":
+        status = t("⏹ <b>Stopped</b>: {sent} of {total} sent", sent=sent, total=len(chosen))
+    else:
+        status = t("✅ <b>Done</b>: {sent} of {total} sent", sent=sent, total=len(chosen))
+    lines = [batch_title(batch), "", status, _tally(batch)]
+    problems = [
+        (i, code, reason)
+        for i, (code, reason) in sorted(batch.results.items())
+        if code in (batches.FAILED, batches.SKIPPED, batches.UNCERTAIN)
+    ]
+    if problems:
+        lines.append("")
+        for index, _code, reason in problems[:15]:
+            why = _plain(reason, 80) if reason else t("cancelled")
+            title = escape(_short(batch.items[index].title, 50)) if index < len(batch.items) else "?"
+            lines.append(f"• {index + 1}. {title}: {why}")
+        if len(problems) > 15:
+            lines.append(t("…and {n} more", n=len(problems) - 15))
+    if not_started := sum(1 for i in chosen if i not in batch.results):
+        lines.append(t("{n} item(s) were not started.", n=not_started))
+    return "\n".join(lines)

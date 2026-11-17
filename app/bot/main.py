@@ -5,7 +5,7 @@ from aiogram import Dispatcher
 
 from app.bot import language
 from app.bot.errors import on_error
-from app.bot.handlers import callbacks, links, start
+from app.bot.handlers import batch, callbacks, links, start
 from app.bot.membership import MembershipMiddleware
 from app.config import get_settings
 from app.logging_config import redact_logs
@@ -18,7 +18,7 @@ async def main() -> None:
     bot = make_bot()
     dp = Dispatcher()
     dp.errors.register(on_error)
-    dp.include_routers(language.router, start.router, callbacks.router, links.router)
+    dp.include_routers(language.router, start.router, batch.router, callbacks.router, links.router)
     languages = language.LanguageMiddleware()
     dp.message.outer_middleware(languages)
     dp.callback_query.outer_middleware(languages)

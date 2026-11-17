@@ -18,7 +18,7 @@ from yt_dlp.plugins import load_all_plugins
 from yt_dlp.utils import DownloadCancelled, DownloadError
 
 from app.config import get_settings
-from app.models import DownloadResult, FormatOption, GalleryItem, MediaInfo
+from app.models import CollectionEntry, DownloadResult, FormatOption, GalleryItem, MediaInfo
 from app.platforms import gallery
 from app.platforms.base import ProgressCb
 from app.platforms.common import (
@@ -333,6 +333,78 @@ class Progress:
         stage = self.POSTPROCESSORS.get(d.get("postprocessor") or "")
         if stage and d.get("status") == "started":
             self.cb(self.done, self.done or None, stage=stage)
+
+
+# ---------------------------------------------------------------- collections
+
+# Entries yt-dlp lists in a playlist although they can't be downloaded.
+UNAVAILABLE_TITLES = {"[private video]", "[deleted video]", "[unavailable video]"}
+
+
+def collection_opts() -> dict[str, Any]:
+    """Flat playlist listing: entry links and titles only, one item beyond the cap to detect it."""
+    return {
+        "noplaylist": False,
+        "extract_flat": "in_playlist",
+        "playlistend": get_settings().collection_max_items + 1,
+    }
+
+
+def _title_from_url(url: str) -> str:
+    slug = url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    return slug.replace("-", " ").replace("_", " ").strip() or url
+
+
+def collection_info(
+    info: dict,
+    *,
+    platform: str,
+    media_id: str,
+    url: str,
+    domains: tuple[str, ...],
+    entry_url,
+    audio: bool,
+    thumbnail: str | None = None,
+) -> MediaInfo:
+    """A playlist / album / set from yt-dlp's flat listing. Entries stay links: each one is looked
+    up and downloaded on its own, in order, when the user confirms. Entry links must stay on the
+    platform's own domains (the network guard applies to them again when they are fetched)."""
+    entries: list[CollectionEntry] = []
+    for entry in info.get("entries") or []:
+        if not entry:
+            continue
+        link = entry_url(entry)
+        title = " ".join(str(entry.get("title") or "").split())
+        if not link or not on_domains(link, domains) or title.lower() in UNAVAILABLE_TITLES:
+            continue
+        duration = entry.get("duration")
+        entries.append(
+            CollectionEntry(
+                url=link,
+                title=(title or _title_from_url(link))[:200],
+                duration=int(duration) if duration else None,
+                uploader=entry.get("uploader") or entry.get("channel") or entry.get("artist"),
+            )
+        )
+    if not entries:
+        raise UserError("No downloadable items found in this playlist.")
+    limit = get_settings().collection_max_items
+    total = max(int(info.get("playlist_count") or 0), len(entries))
+    thumbs = [t for t in info.get("thumbnails") or [] if t.get("url")]
+    thumbs.sort(key=lambda t: t.get("width") or 0)
+    return MediaInfo(
+        platform=platform,
+        id=media_id,
+        url=url,
+        title=" ".join(str(info.get("title") or "").split())[:200] or _title_from_url(url),
+        uploader=info.get("uploader") or info.get("channel") or info.get("artist"),
+        uploader_url=info.get("uploader_url") or info.get("channel_url"),
+        thumbnail=thumbnail or info.get("thumbnail") or (thumbs[-1]["url"] if thumbs else None),
+        description=info.get("description") or "",
+        kind="collection",
+        entries=entries[:limit],
+        extra={"total": total, "audio": audio},
+    )
 
 
 # ---------------------------------------------------------------- platform

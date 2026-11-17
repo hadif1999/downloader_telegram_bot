@@ -8,9 +8,16 @@ from typing import Any
 
 from app.config import get_settings
 from app.models import AudioTrack, MediaInfo
-from app.platforms.common import cookie_file
+from app.platforms.common import cookie_file, url_key
+from app.platforms.downloader import YoutubeDL
 from app.platforms.network import on_domains, open_url
-from app.platforms.ytdlp import YtDlpPlatform, audio_formats, is_original_audio
+from app.platforms.ytdlp import (
+    YtDlpPlatform,
+    audio_formats,
+    collection_info,
+    collection_opts,
+    is_original_audio,
+)
 
 ID_RE = re.compile(
     r"(?:https?://)?(?:www\.|m\.|music\.)?"
@@ -18,6 +25,8 @@ ID_RE = re.compile(
     r"([\w-]{11})",
     re.I,
 )
+# Playlists and YouTube Music albums (OLAK5uy_ lists). watch?v=…&list=… stays a single video.
+PLAYLIST_RE = re.compile(r"youtube\.com/playlist\?(?:\S*?&)?list=([\w-]+)", re.I)
 
 
 def build_audio_tracks(info: dict) -> list[AudioTrack]:
@@ -32,6 +41,18 @@ def build_audio_tracks(info: dict) -> list[AudioTrack]:
         AudioTrack(lang=lang, label=lang.upper(), original=orig)
         for lang, orig in sorted(langs.items(), key=lambda kv: (not kv[1], kv[0]))
     ]
+
+
+ID_SHAPE = re.compile(r"[\w-]{11}")
+
+
+def playlist_id(url: str) -> str | None:
+    m = PLAYLIST_RE.search(url)
+    return m.group(1) if m else None
+
+
+def playlist_url(list_id: str) -> str:
+    return f"https://www.youtube.com/playlist?list={list_id}"
 
 
 def _url_ok(url: str) -> bool:
@@ -60,14 +81,41 @@ class YouTube(YtDlpPlatform):
     title = "YouTube"
     emoji = "▶️"
 
-    def match(self, url: str) -> str | None:
-        if not on_domains(url, ("youtube.com", "youtu.be")):
-            return None
-        m = ID_RE.search(url)
-        return m.group(1) if m else None
+    domains = ("youtube.com", "youtu.be")
 
-    def url_for(self, media_id: str) -> str:
-        return f"https://www.youtube.com/watch?v={media_id}"
+    def match(self, url: str) -> str | None:
+        if not on_domains(url, self.domains):
+            return None
+        if m := ID_RE.search(url):
+            return m.group(1)
+        if list_id := playlist_id(url):
+            return url_key(playlist_url(list_id))  # list ids are longer than callback data allows
+        return None
+
+    def url_for(self, media_id: str) -> str | None:
+        # Playlists use a hashed id: their link comes from the cached source url.
+        return f"https://www.youtube.com/watch?v={media_id}" if len(media_id) == 11 else None
+
+    def extract(self, url: str) -> MediaInfo:
+        list_id = playlist_id(url) if not ID_RE.search(url) else None
+        if not list_id:
+            return super().extract(url)
+        with YoutubeDL({**self.ydl_opts(), **collection_opts(), "skip_download": True}) as ydl:
+            info = ydl.extract_info(playlist_url(list_id), download=False) or {}
+        music = list_id.startswith("OLAK5uy_") or on_domains(url, ("music.youtube.com",))
+        return collection_info(
+            info,
+            platform=self.name,
+            media_id=self.match(url) or url_key(url),
+            url=url,
+            domains=self.domains,
+            entry_url=lambda e: (
+                f"https://www.youtube.com/watch?v={e['id']}"
+                if ID_SHAPE.fullmatch(e.get("id") or "")
+                else None
+            ),
+            audio=music,
+        )
 
     def ydl_opts(self) -> dict[str, Any]:
         opts = super().ydl_opts()

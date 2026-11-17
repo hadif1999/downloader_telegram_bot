@@ -22,7 +22,7 @@ def link_request(monkeypatch):
     message.reply = AsyncMock(return_value=status)
     platform = SimpleNamespace(name="yt", title="YouTube")
     info = MediaInfo("yt", "id", message.text, "Title", formats=[FormatOption("720", "720p", None)])
-    monkeypatch.setattr(links.registry, "detect", lambda _: (platform, "id", message.text))
+    monkeypatch.setattr(links.registry, "detect_all", lambda text, limit=None: ([(platform, "id", text)], 0))
     monkeypatch.setattr(links, "_extract_sem", asyncio.Semaphore(4))
     monkeypatch.setattr(links, "edit_status", AsyncMock())
     monkeypatch.setattr(links, "send_info_card", AsyncMock())

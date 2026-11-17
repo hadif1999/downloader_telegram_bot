@@ -10,6 +10,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InputMediaPhoto, Message
 
 from app.bot.errors import report_error
+from app.bot.handlers import batch
 from app.config import get_settings
 from app.i18n import t
 from app.models import MediaInfo
@@ -56,17 +57,26 @@ async def extraction_progress(status: Message, platform: str) -> None:
 
 @router.message(F.text | F.caption)
 async def on_link(message: Message) -> None:
-    found = registry.detect(message.text or message.caption or "")
+    found, skipped = registry.detect_all(
+        message.text or message.caption or "", get_settings().message_max_links
+    )
     if not found:
         if message.chat.type == ChatType.PRIVATE:
             await message.reply(
                 t("🔗 Send me a link to a video, photo or track.") + "\n\n" + captions.language_hint()
             )
         return
-    platform, media_id, url = found
     if message.from_user is None:
         return
     status = await message.reply(captions.EXTRACT_WAITING)
+    if len(found) > 1:  # several links: one summary card, then one download after another
+        try:
+            await batch.lookup_many(message, status, found, skipped)
+        except Exception as error:
+            log.exception("batch lookup failed")
+            await report_error(status, error, edit=True)
+        return
+    platform, media_id, url = found[0]
     try:
         async with _extract_sem:
             await edit_status(
@@ -94,6 +104,9 @@ async def on_link(message: Message) -> None:
         return
 
     try:
+        if info.kind == "collection":  # playlist / album / set
+            await batch.open_batch(message, status, [(platform, media_id, url, info, None)])
+            return
         if fmt := media.single_choice(info):  # nothing to choose: start right away
             error = await request_download(
                 message.bot,

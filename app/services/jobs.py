@@ -22,7 +22,7 @@ from app.services.keyboards import cancel_kb, formats_kb
 log = logging.getLogger(__name__)
 
 
-async def request_download(
+async def start_download(
     bot: Bot,
     info: MediaInfo,
     fmt: str,
@@ -32,11 +32,13 @@ async def request_download(
     user_id: int,
     card: Message | None = None,
     reply_to: int | None = None,
-) -> str | None:
+    batch: tuple[str, int] | None = None,
+) -> tuple[str | None, bool]:
     """Queue a download. `card` (the info card) is edited into the progress message; without it a
-    new status message is sent. Returns an error text for the user, or None on success."""
+    new status message is sent. Returns (error text for the user or None, whether a worker task
+    now owns the request). `batch` = (batch id, item index) when the item belongs to a batch."""
     if not media.valid_choice(info, fmt, lang):
-        return captions.UNAVAILABLE
+        return captions.UNAVAILABLE, False
     fo = info.format(fmt)
     too_large = fmt != "mp3" and fo and fo.size and fo.size > get_settings().max_file_bytes
     request_id = uuid.uuid4().hex
@@ -48,16 +50,16 @@ async def request_download(
 
         cached = await asyncio.to_thread(cache.get_file_id, info.platform, info.id, fmt, lang)
         if not cached and too_large:
-            return captions.TOO_BIG
+            return captions.TOO_BIG, False
         media_ref = "|".join([info.platform, info.id, fmt, lang or ""])
         created = await asyncio.to_thread(requests.create, request_id, user_id, media_ref)
         if not created:
-            return captions.BUSY
+            return captions.BUSY, False
 
         if cached:
             async with requests.execution(request_id, user_id) as owner:
                 if owner is None:
-                    return captions.UNCERTAIN
+                    return captions.UNCERTAIN, False
                 journal = await Journal.load(request_id, user_id, owner)
                 me = await bot.me()
                 caption = captions.result_caption(info, me.username)
@@ -83,24 +85,24 @@ async def request_download(
                     cached = None
                 except CheckpointError:
                     if len(journal.sent) < journal.total:
-                        return captions.UNCERTAIN
+                        return captions.UNCERTAIN, False
                     # A confirmed send is success even if Redis cannot record its result.
                     log.exception("cached delivery checkpoint failed: %s", request_id)
                     if card is not None:
                         with contextlib.suppress(Exception):
                             await card.delete()
-                    return None
+                    return None, False
                 else:
                     with contextlib.suppress(Exception):
                         await journal.phase("done")
                     if card is not None:
                         with contextlib.suppress(Exception):
                             await card.delete()
-                    return None
+                    return None, False
 
         if not cached and too_large:
             await asyncio.to_thread(requests.cancel_queued, request_id, user_id)
-            return captions.TOO_BIG
+            return captions.TOO_BIG, False
         stop = cancel_kb(request_id)
         if card is not None:
             text = captions.status_caption(info, captions.QUEUED, fmt, lang)
@@ -126,14 +128,14 @@ async def request_download(
         await asyncio.to_thread(
             download_media.apply_async,
             args=(chat_id, status_id, is_caption, info.platform, info.id, fmt, lang, user_id, reply_to),
-            kwargs={"ui_language": i18n.current()},
+            kwargs={"ui_language": i18n.current(), **({"batch": list(batch)} if batch else {})},
             task_id=request_id,
             expires=get_settings().queue_ttl,
             retry=False,
         )
-        return None
+        return None, True
     except requests.DeliveryUncertain:
-        return captions.UNCERTAIN
+        return captions.UNCERTAIN, False
     except Exception as error:
         log.exception(
             "download request failed: request=%s platform=%s media=%s", request_id, info.platform, info.id
@@ -147,10 +149,12 @@ async def request_download(
                     if publish_started and state.get("phase") != "cancelled":
                         # A lost broker acknowledgement may follow a completed upload.
                         # Never replace the worker's outcome with a false enqueue failure.
-                        return captions.UNCERTAIN if state.get("phase") in {None, "uncertain"} else None
+                        return (
+                            captions.UNCERTAIN if state.get("phase") in {None, "uncertain"} else None
+                        ), True
             except Exception:
                 log.exception("couldn't confirm queue cancellation: %s", request_id)
-                return captions.UNCERTAIN
+                return captions.UNCERTAIN, False
         if status_card is not None:
             with contextlib.suppress(Exception):
                 kb = formats_kb(info, get_settings().max_file_bytes)
@@ -159,4 +163,22 @@ async def request_download(
                     await status_card.edit_caption(caption=text, reply_markup=kb)
                 else:
                     await status_card.edit_text(text, reply_markup=kb)
-        return user_message(error)
+        return user_message(error), False
+
+
+async def request_download(
+    bot: Bot,
+    info: MediaInfo,
+    fmt: str,
+    lang: str | None,
+    *,
+    chat_id: int,
+    user_id: int,
+    card: Message | None = None,
+    reply_to: int | None = None,
+) -> str | None:
+    """Queue a download (see start_download). Returns an error text for the user, or None."""
+    error, _ = await start_download(
+        bot, info, fmt, lang, chat_id=chat_id, user_id=user_id, card=card, reply_to=reply_to
+    )
+    return error

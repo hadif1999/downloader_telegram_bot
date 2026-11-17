@@ -26,6 +26,30 @@ but its checkpoint cannot be persisted, an unfinished gallery is reported uncert
 result is not falsely reported as failed. Unexpected download/delivery errors propagate to Celery
 after updating the user-facing status, rather than being counted as successful worker tasks.
 
+## Batches (playlists, albums, several links)
+
+A batch (`app/services/batches.py`) is a Redis hash: the item list and summary metadata, the
+selection, the quality preset, a phase and a cursor. Its items are **ordinary requests**, so each
+one has its own journal, user lock, lease, retries, cancel button and file-ID cache. A batch adds
+only the ordering:
+
+- **One item at a time.** Confirming publishes `advance_batch(batch, -1)`. That task claims the
+  next selected item with `begin(after)` and queues it with `jobs.start_download`. When the item's
+  `download_media` ends (sent, failed, cancelled or uncertain, but not on a lease-race retry), it
+  records the outcome and publishes `advance_batch(batch, index)`. Items served from the file-ID
+  cache, or failing before they are queued, are recorded and the loop continues in the same task.
+- **Duplicates are no-ops.** `begin(after)` hands out an item only while `cursor == after`, and
+  moves the cursor atomically. A redelivered or repeated advance finds the cursor already moved
+  and stops. The final summary is drawn once, by the call that moves the phase to `done`/`stopped`.
+- **The user lock still applies.** If the user started another download between two items, the
+  claim is given back (`release`) and the advance task retries in 20 s.
+- **Uncertain items are never resent.** They are counted and listed, and the batch moves on.
+- **Stop** lets the running item finish and starts nothing after it; a draft is simply cancelled.
+  Only the user stored on the batch can change or stop it.
+- Lifetime: drafts expire with `INFO_CACHE_TTL`; a running batch's TTL is extended on every
+  step to `QUEUE_TTL` + 1 h. A hard kill of a worker during an item (task time limit) can leave the
+  batch waiting: the items already sent stay sent, and the batch expires.
+
 ## Persistence and deployment
 
 Redis is required state, not merely a disposable cache. Compose uses AOF and `appendfsync always`
