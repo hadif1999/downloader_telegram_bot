@@ -1,0 +1,40 @@
+# Production overlay for a shared VPS. Use together with docker-compose.yml:
+#   docker compose -p tg_dl -f docker-compose.yml -f docker-compose.prod.yml up -d --no-build
+#
+# * All containers run inside the systemd slice `tg_dl.slice` (deploy/tg_dl.slice), which caps the
+#   whole bot at 500 MB RAM (no swap) and one CPU core, with lower I/O priority than other services.
+#   Per-service limits below only stop one container from starving its siblings inside that budget.
+# * Persistent data lives on a dedicated 10 GB filesystem mounted at DATA_DIR (deploy/README.md),
+#   so downloads can never fill the host disk; the worker's MIN_FREE_DISK_MB guard measures it.
+# * No ports are published; nothing here touches other Compose projects or the Docker daemon.
+
+x-limits: &limits
+  cgroup_parent: tg_dl.slice
+  pids_limit: 512
+
+services:
+  redis:
+    <<: *limits
+    mem_limit: 96m
+  telegram-bot-api:
+    <<: *limits
+    mem_limit: 192m
+  bgutil-provider:
+    <<: *limits
+    mem_limit: 192m
+  bot:
+    <<: *limits
+    mem_limit: 160m
+    pull_policy: never
+  worker:
+    <<: *limits
+    mem_limit: 420m
+    pull_policy: never
+
+volumes:
+  redis-data:
+    driver_opts: {type: none, o: bind, device: "${DATA_DIR:-/opt/tg_dl/data}/redis"}
+  botapi-data:
+    driver_opts: {type: none, o: bind, device: "${DATA_DIR:-/opt/tg_dl/data}/botapi"}
+  downloads:
+    driver_opts: {type: none, o: bind, device: "${DATA_DIR:-/opt/tg_dl/data}/downloads"}

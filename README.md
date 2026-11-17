@@ -99,6 +99,27 @@ Media clients do not use environment HTTP proxies, which could bypass these dest
 network-layer routing/VPNs remain usable. Only the configured PO-token provider's `GET /ping` and
 `POST /get_pot` endpoints are allowed as trusted internal yt-dlp requests.
 
+### Deploying on a shared VPS
+
+`docker-compose.prod.yml` runs the stack as Compose project `tg_dl` inside the systemd slice
+`deploy/tg_dl.slice`: 500 MB RAM in total (no swap), one CPU core, and lower disk I/O priority than
+other services. Redis, Bot API and download data live on a dedicated 10 GB filesystem, so the bot
+cannot fill the host disk. No ports are published and the Docker daemon configuration is unchanged.
+
+```sh
+# once, as root, in /opt/tg_dl (repository files + .env)
+cp deploy/tg_dl.slice /etc/systemd/system/ && systemctl daemon-reload
+truncate -s 10G /opt/tg_dl/data.img && mkfs.ext4 -q -m 0 /opt/tg_dl/data.img
+mkdir -p /opt/tg_dl/data
+echo '/opt/tg_dl/data.img /opt/tg_dl/data ext4 loop,noatime,nofail 0 2' >> /etc/fstab && mount /opt/tg_dl/data
+mkdir -p /opt/tg_dl/data/{redis,botapi,downloads} && chown 1000:1000 /opt/tg_dl/data/downloads
+# every release (image built elsewhere: docker save media-downloader-bot | ssh … docker load)
+docker compose -p tg_dl -f docker-compose.yml -f docker-compose.prod.yml up -d --no-build
+```
+
+Stop any other instance using the same bot token first (for example a local `uv run main.py` stack):
+two Bot API servers or pollers for one token conflict.
+
 ### Without the local Bot API server
 Set `BOT_API_URL=` (empty), `BOT_API_LOCAL=false`, `MAX_FILE_MB=50`. Files are then uploaded over HTTP
 and anything over 50 MB is shown as ❌.

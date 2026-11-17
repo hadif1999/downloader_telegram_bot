@@ -7,3 +7,11 @@ graphify-out
 docs
 tests
 **/__pycache__
+cookies
+.serena
+.pytest_cache
+.ruff_cache
+.tokensave
+deploy
+*.md
+!README.md
