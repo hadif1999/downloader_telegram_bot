@@ -102,8 +102,8 @@ network-layer routing/VPNs remain usable. Only the configured PO-token provider'
 ### Deploying on a shared VPS
 
 `docker-compose.prod.yml` runs the stack as Compose project `tg_dl` inside the systemd slice
-`deploy/tg_dl.slice`: 500 MB RAM in total (no swap), one CPU core, and lower disk I/O priority than
-other services. Redis, Bot API and download data live on a dedicated 10 GB filesystem, so the bot
+`deploy/tg_dl.slice`: 650 MB RAM in total (no swap; ~300 MB idle stack + 350 MB for a download),
+one CPU core, and lower disk I/O priority than other services. Redis, Bot API and download data live on a dedicated 10 GB filesystem, so the bot
 cannot fill the host disk. No ports are published and the Docker daemon configuration is unchanged.
 
 ```sh
@@ -119,8 +119,11 @@ docker compose -p tg_dl -f docker-compose.yml -f docker-compose.prod.yml up -d -
 
 Memory: each bot/worker process idles at ~75 MB because aiogram's ~460 pydantic models are built on
 first use instead of at import (`app/lean_models.py`; eager builds cost ~175 MB per process). The
-idle stack is ~300 MB, leaving room for one download (`MAX_PARALLEL_DOWNLOADS=1`) inside 500 MB;
-worker pool processes are recycled after a task once they exceed 200 MB. Set
+idle stack is ~300 MB, leaving 350 MB for one download (`MAX_PARALLEL_DOWNLOADS=1`) inside 650 MB;
+worker pool processes are recycled after a task once they exceed 200 MB. Downloads are fetched in
+`DOWNLOAD_PART_MB` (200 MB) byte-range parts written straight into the final file and flushed from
+the page cache every 16 MB, so a 2 GB file needs no more memory than a small one (measured: 2 GB in
+a 150 MB container peaks at 88 MB). Set
 `AIOGRAM_EAGER_MODELS=1` to restore aiogram's eager model building.
 
 Stop any other instance using the same bot token first (for example a local `uv run main.py` stack):

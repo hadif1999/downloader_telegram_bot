@@ -66,6 +66,14 @@ def install() -> bool:
     finally:
         pydantic.BaseModel.model_rebuild = descriptor  # restore the exact original classmethod
 
+    # Make the names aiogram resolves eagerly visible where pydantic looks when it builds a model
+    # later: the defining module of every aiogram model, including classes created at runtime such
+    # as the generic ``Response[ChatFullInfo]``, which never see a parent namespace. These names
+    # are only imported under TYPE_CHECKING in aiogram's modules; adding missing ones is harmless.
+    for name, module in list(sys.modules.items()):
+        if name.startswith("aiogram.") and module is not None:
+            for key, value in namespace.items():
+                module.__dict__.setdefault(key, value)
     for cls in _subclasses(pydantic.BaseModel):
         if cls.__module__.startswith("aiogram.") and not cls.__pydantic_complete__:
             cls.__pydantic_parent_namespace__ = {**(cls.__pydantic_parent_namespace__ or {}), **namespace}

@@ -72,6 +72,71 @@ def test_api_responses_parse_into_lazily_built_types(method, result, expected):
     assert isinstance(response.result, expected)
 
 
+def method_classes():
+    from aiogram.methods.base import TelegramMethod
+
+    # Concrete API methods only; generic TelegramMethod[...] helpers can't be built in any mode.
+    return sorted(
+        (
+            c
+            for c in lean_models._subclasses(TelegramMethod)
+            if c.__module__.startswith("aiogram.methods.") and "[" not in c.__name__
+        ),
+        key=lambda c: c.__qualname__,
+    )
+
+
+FRESH_RESPONSES = r"""
+import json, app
+from aiogram import Bot
+from aiogram.methods import GetChat, GetChatMember, GetMe, SendMessage
+from aiogram.methods.base import Response, TelegramMethod
+from app import lean_models
+
+bot = Bot("123456:offline-tests")
+chat = {
+    "id": -100, "type": "channel", "title": "Channel", "username": "channel", "accent_color_id": 0,
+    "max_reaction_count": 11, "available_reactions": [{"type": "emoji", "emoji": "+"}],
+    "accepted_gift_types": {"unlimited_gifts": False, "limited_gifts": False, "unique_gifts": False,
+                            "premium_subscription": False, "gifts_from_channels": False},
+}
+user = {"id": 2, "is_bot": True, "first_name": "b", "username": "b"}
+calls = [
+    (GetChat(chat_id="@channel"), chat),
+    (GetMe(), user),
+    (GetChatMember(chat_id=-100, user_id=2), {"status": "member", "user": user}),
+    (SendMessage(chat_id=1, text="x"), {"message_id": 1, "date": 0, "chat": {"id": 1, "type": "private"}}),
+]
+for method, result in calls:  # first use of each response type happens here, after install()
+    bot.session.check_response(bot, method, 200, json.dumps({"ok": True, "result": result}))
+methods = [c for c in lean_models._subclasses(TelegramMethod)
+           if c.__module__.startswith("aiogram.methods.") and "[" not in c.__name__]
+failures = []
+for method in methods:
+    try:
+        Response[method.__returning__].model_rebuild(force=True)
+    except Exception as error:
+        failures.append(f"{method.__qualname__}: {error}"[:200])
+print(lean_models._installed, len(methods), failures[:3])
+"""
+
+
+def test_runtime_created_response_types_resolve_in_a_fresh_process():
+    """Generic Response[...] classes are created after install(), on first use. Run in a fresh
+    interpreter: earlier tests in this process force-build models and would hide a failure."""
+    result = subprocess.run(
+        [sys.executable, "-c", FRESH_RESPONSES],
+        env={**os.environ, "AIOGRAM_EAGER_MODELS": ""},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.split(" ", 2)[0] == "True"
+    count = int(result.stdout.split(" ", 2)[1])
+    assert count > 100 and result.stdout.strip().endswith("[]"), result.stdout
+
+
 def test_updates_round_trip_through_lazy_models():
     data = {
         "update_id": 1,
