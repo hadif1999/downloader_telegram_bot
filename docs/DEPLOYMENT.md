@@ -23,8 +23,8 @@ uploads), `bgutil-provider` (YouTube PO tokens), `bot` (aiogram polling), `worke
 | Part | Typical | Limit |
 |---|---|---|
 | redis + bot-api + bgutil | ~150 MB | 96m / 192m / 192m |
-| bot idle + `EXTRACT_SLOTS=4` lookups | ~90 MB + ~40-60 MB per lookup (no JS solver) | 384m |
-| worker idle (2 pool processes) | ~160 MB | 640m |
+| bot idle + `EXTRACT_SLOTS=4` lookups | ~90 MB + ~40-60 MB per lookup (no JS solver) | 512m |
+| worker idle (2 pool processes) | ~160 MB | 1g (= the slice; it gets what the others leave) |
 | `MAX_PARALLEL_DOWNLOADS=2` downloads | worker peak ~540 MB incl. page cache | in worker |
 
 Measured: two parallel 1080p/720p downloads peak at ~960 MB for the slice including reclaimable

@@ -25,14 +25,15 @@ services:
     mem_limit: 192m
   bot:
     <<: *limits
-    # ~90 MB idle + EXTRACT_SLOTS (4) lookups at ~40-60 MB each (no JS solver).
-    mem_limit: 384m
+    # ~90 MB idle + EXTRACT_SLOTS (4) lookups at ~40-60 MB each (no JS solver), with headroom.
+    mem_limit: 512m
     pull_policy: never
   worker:
     <<: *limits
     # ~170 MB idle (2 pool processes) + MAX_PARALLEL_DOWNLOADS (2) downloads: yt-dlp, ffmpeg and
-    # bounded page cache (two 16 MB writeback windows per file).
-    mem_limit: 640m
+    # bounded page cache (two 16 MB writeback windows per file). As large as the slice: the worker
+    # may use whatever the other services leave free; tg_dl.slice still caps the stack at 1 GB.
+    mem_limit: 1g
     pull_policy: never
     # Recycle a pool process after a task once it exceeds 200 MB, so memory retained by a large
     # download is returned instead of accumulating inside the shared budget.
