@@ -38,14 +38,15 @@ def keys(request_id: str, user_id: int) -> tuple[str, str, str]:
     return base, base + ":lease", f"lock:{namespace()}:user:{user_id}"
 
 
-def create(request_id: str, user_id: int) -> bool:
+def create(request_id: str, user_id: int, media: str = "") -> bool:
+    """`media` ("platform|id|fmt|lang") lets the bot redraw the card when a queued job is cancelled."""
     job, _, user = keys(request_id, user_id)
     return bool(
         client().eval(
             """
         if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
         if not redis.call('SET', KEYS[2], ARGV[1], 'NX', 'EX', ARGV[2]) then return 0 end
-        redis.call('HSET', KEYS[1], 'phase', 'queued', 'offset', 0, 'sent', '[]')
+        redis.call('HSET', KEYS[1], 'phase', 'queued', 'offset', 0, 'sent', '[]', 'media', ARGV[4], 'user', ARGV[5])
         redis.call('EXPIRE', KEYS[1], ARGV[3])
         return 1
     """,
@@ -55,6 +56,8 @@ def create(request_id: str, user_id: int) -> bool:
             request_id,
             get_settings().queue_ttl + 60,
             SRC_TTL,
+            media,
+            user_id,
         )
     )
 
@@ -203,6 +206,51 @@ def cancel_queued(request_id: str, user_id: int, allow_idle: bool = False) -> bo
             "1" if allow_idle else "0",
         )
     )
+
+
+# request_cancel() outcomes
+CANCEL_UNKNOWN, CANCEL_STOPPED, CANCEL_SIGNALLED, CANCEL_TOO_LATE = 0, 1, 2, 3
+
+
+def cancel_key(request_id: str, user_id: int) -> str:
+    return keys(request_id, user_id)[0] + ":cancel"
+
+
+def request_cancel(request_id: str, user_id: int) -> int:
+    """The user pressed Cancel. A queued job is cancelled at once (CANCEL_STOPPED); a running one
+    gets a flag its worker polls (CANCEL_SIGNALLED). Jobs already sending or finished can't be
+    stopped (CANCEL_TOO_LATE). Only the requesting user may cancel; anyone else, or an expired
+    request, gets CANCEL_UNKNOWN."""
+    job, execution, user = keys(request_id, user_id)
+    return int(
+        client().eval(
+            """
+        local phase = redis.call('HGET', KEYS[1], 'phase')
+        if not phase or redis.call('HGET', KEYS[1], 'user') ~= ARGV[3] then return 0 end
+        if phase == 'queued' then
+            redis.call('HSET', KEYS[1], 'phase', 'cancelled')
+            if redis.call('GET', KEYS[2]) == ARGV[1] then redis.call('DEL', KEYS[2]) end
+            return 1
+        end
+        if phase == 'working' then
+            redis.call('SET', KEYS[3], '1', 'EX', ARGV[2])
+            return 2
+        end
+        return 3
+    """,
+            3,
+            job,
+            user,
+            cancel_key(request_id, user_id),
+            request_id,
+            get_settings().task_time_limit + 600,
+            user_id,
+        )
+    )
+
+
+def cancel_requested(request_id: str, user_id: int) -> bool:
+    return bool(client().exists(cancel_key(request_id, user_id)))
 
 
 @asynccontextmanager

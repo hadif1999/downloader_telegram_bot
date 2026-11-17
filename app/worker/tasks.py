@@ -6,7 +6,6 @@ import json
 import logging
 import shutil
 import subprocess
-import time
 import uuid
 from pathlib import Path
 
@@ -16,15 +15,15 @@ from app.config import get_settings
 from app.platforms import registry
 from app.platforms.common import download_file
 from app.platforms.ytdlp import TooLarge, UserError
-from app.services import cache, captions, media, requests, storage
+from app.services import cache, captions, keyboards, media, progress, requests, storage
 from app.services.delivery import CheckpointError, Journal, edit_status, local_file, send_gallery, send_media
 from app.services.errors import user_message
 from app.services.telegram import make_bot
 from app.worker.celery_app import celery
 
 log = logging.getLogger(__name__)
-PROGRESS_EVERY_SEC = 3
-PROGRESS_MIN_STEP = 5
+PROGRESS_EVERY_SEC = 3  # status card refresh in private chats
+GROUP_PROGRESS_EVERY_SEC = 5  # groups allow ~20 edits per minute
 
 
 def make_thumb(url: str | None, dest: Path) -> Path | None:
@@ -89,9 +88,47 @@ async def _run(
     journal = None
     slot = None
 
-    async def status(text):
+    monitor = progress.Monitor()
+    ticker = None
+    edit_lock = asyncio.Lock()
+    shown = {"text": None}
+
+    async def status(text, markup=None):
         body = captions.status_caption(info, text, fmt, lang) if info else text
-        await edit_status(bot, chat_id, msg_id, body, is_caption)
+        await edit_status(bot, chat_id, msg_id, body, is_caption, markup)
+
+    async def show():
+        """Render the live card; edits are serialized so a slow edit can't land out of order."""
+        async with edit_lock:
+            text = monitor.render()
+            markup = keyboards.cancel_kb(request_id) if monitor.cancellable else None
+            if (text, markup is None) != shown["text"]:
+                shown["text"] = (text, markup is None)
+                await status(text, markup)
+
+    async def watch():
+        every = GROUP_PROGRESS_EVERY_SEC if chat_id < 0 else PROGRESS_EVERY_SEC
+        while True:
+            await asyncio.sleep(every)
+            with contextlib.suppress(progress.Cancelled):
+                await check_cancel()  # sets the flag; the download thread raises on its next report
+            await show()
+
+    async def stop_ticker():
+        if ticker is not None and not ticker.done():
+            ticker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await ticker
+
+    async def check_cancel():
+        if not monitor.cancel.is_set():
+            try:
+                if await asyncio.to_thread(requests.cancel_requested, request_id, user_id):
+                    monitor.cancel.set()
+            except Exception:
+                log.debug("cancel flag check failed: request=%s", request_id)
+        if monitor.cancel.is_set():
+            raise progress.Cancelled
 
     try:
         async with requests.execution(request_id, user_id) as owner:
@@ -117,26 +154,9 @@ async def _run(
                     raise UserError(captions.EXPIRED)
                 if not media.valid_choice(info, fmt, lang):
                     raise UserError(captions.UNAVAILABLE)
-                unit = "files" if info.kind == "gallery" else "bytes"
-                await status(captions.progress_text(0, None))
-                loop = asyncio.get_running_loop()
-                last = {"t": 0.0, "pct": -100}
-
-                def on_progress(done, total):
-                    pct = int(done * 100 / total) if total else 0
-                    now = time.monotonic()
-                    if now - last["t"] < PROGRESS_EVERY_SEC or (
-                        total and pct - last["pct"] < PROGRESS_MIN_STEP
-                    ):
-                        return
-                    last.update(t=now, pct=pct)
-                    future = asyncio.run_coroutine_threadsafe(
-                        status(captions.progress_text(done, total, unit=unit)), loop
-                    )
-                    try:
-                        future.result(timeout=8)
-                    except Exception:
-                        future.cancel()  # late progress must not overwrite UPLOADING
+                monitor.unit = "files" if info.kind == "gallery" else "bytes"
+                await show()
+                ticker = asyncio.create_task(watch())
 
                 dest.mkdir(parents=True, exist_ok=True)
                 # A pinned slot keeps retained files from being evicted while they upload.
@@ -150,13 +170,15 @@ async def _run(
                     await asyncio.to_thread(
                         storage.ensure_space, s.download_dir, download_estimate(info, fmt)
                     )
-                    result = await asyncio.to_thread(platform.download, info, fmt, lang, dest, on_progress)
+                    result = await asyncio.to_thread(platform.download, info, fmt, lang, dest, monitor)
                 paths = [p for p, _ in result.files] or [result.path]
                 if any(Path(p).stat().st_size > s.max_file_bytes for p in paths):
                     raise TooLarge(media_id)
                 if slot.result is None:
                     result = await asyncio.to_thread(slot.store, result)
-                await status(captions.UPLOADING)
+                await check_cancel()  # last chance: nothing is sent after this point
+                monitor.set_stage("upload", size=sum(Path(p).stat().st_size for p in paths))
+                await show()
                 me = await bot.get_me()
                 caption = captions.result_caption(info, me.username)
                 try:
@@ -204,15 +226,25 @@ async def _run(
                     log.exception("couldn't cache delivered media: %s", request_id)
                 with contextlib.suppress(Exception):
                     await journal.phase("done")
+                await stop_ticker()
                 with contextlib.suppress(Exception):
                     await bot.delete_message(chat_id, msg_id)
             except requests.DeliveryUncertain:
                 raise
+            except progress.Cancelled:
+                await stop_ticker()
+                log.info("download cancelled by user: request=%s", request_id)
+                with contextlib.suppress(Exception):
+                    await journal.phase("cancelled")
+                await status(captions.CANCELLED, keyboards.formats_kb(info, s.max_file_bytes))
+                return
             except Exception:
                 if journal:
                     with contextlib.suppress(Exception):
                         await journal.phase("failed")
                 raise  # monitoring must see unexpected download/delivery errors as failures
+            finally:
+                await stop_ticker()  # before any final status edit, so a tick can't overwrite it
     except requests.LeaseBusy:
         raise  # the task wrapper retries competing redeliveries without altering their status
     except Exception as error:

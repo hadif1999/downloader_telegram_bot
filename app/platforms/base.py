@@ -6,8 +6,9 @@ from typing import Protocol
 
 from app.models import DownloadResult, MediaInfo
 
-# progress callback: (done, total_or_None) - bytes, or item count for galleries
-ProgressCb = Callable[[int, int | None], None]
+# progress callback: (done, total_or_None, **detail) - bytes, or item count for galleries.
+# Optional detail keys (stage, track, part, parts, ...) are documented in app.services.progress.
+ProgressCb = Callable[..., None]
 
 
 class Platform(Protocol):

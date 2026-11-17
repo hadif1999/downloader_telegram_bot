@@ -136,9 +136,14 @@ def test_local_video_and_mp3_outputs_exist_after_postprocessing(tmp_path, monkey
     )
     dest = tmp_path / "out"
     dest.mkdir()
-    result = p.download_url(source.as_uri(), info, fmt, None, dest, lambda *a: None)
+    stages = []
+    result = p.download_url(
+        source.as_uri(), info, fmt, None, dest, lambda *a, **detail: stages.append(detail.get("stage"))
+    )
     assert Path(result.path).is_file()
     assert Path(result.path).suffix == (".mp3" if fmt == "mp3" else ".mp4")
+    if fmt == "mp3":  # the status card shows the conversion step reported by yt-dlp's hooks
+        assert "convert" in stages and stages.index("convert") > stages.index(None)
 
 
 def test_progressive_video_replaces_embedded_audio_with_requested_track(tmp_path, monkeypatch):
@@ -205,7 +210,9 @@ def test_progressive_video_replaces_embedded_audio_with_requested_track(tmp_path
     )
     dest = tmp_path / "out"
     dest.mkdir()
-    result = p.download_url(info.url, info, "720", "de", dest, lambda *a: None)
+    stages = []
+    result = p.download_url(info.url, info, "720", "de", dest, lambda *a, **d: stages.append(d.get("stage")))
+    assert "merge" in stages  # separate video and audio tracks are merged as a visible step
     probe = subprocess.run(
         [
             "ffprobe",

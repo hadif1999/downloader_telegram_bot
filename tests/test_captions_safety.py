@@ -9,6 +9,14 @@ from aiogram.types import Message
 from app.bot.handlers import callbacks
 from app.models import FormatOption, MediaInfo
 from app.services import captions, media
+from app.services.progress import Monitor
+
+
+def card(done, total, unit="bytes"):
+    """The live download status as the worker renders it."""
+    monitor = Monitor(unit)
+    monitor(done, total)
+    return monitor.render()
 
 
 @pytest.mark.parametrize("value", ["<>&\"'" * 500, "😀" * 1500, "line\n" * 500])
@@ -57,7 +65,7 @@ def test_download_status_puts_progress_before_compact_media_context():
         upload_date="2022-01-28",
         formats=[FormatOption("1080", "1080p", None, 1080)],
     )
-    text = captions.status_caption(info, captions.progress_text(40, 100), "1080", "de-DE")
+    text = captions.status_caption(info, card(40, 100), "1080", "de-DE")
     assert text.startswith("⬇️ <b>Downloading</b>")
     assert text.index("40%") < text.index("A title")
     assert "Steve Brunton · 1080p · DE-DE · 17:38" in text
@@ -68,26 +76,26 @@ def test_download_status_puts_progress_before_compact_media_context():
 
 @pytest.mark.parametrize("total", [None, 0, -1])
 def test_preparing_download_has_useful_feedback_without_unknown_size_marker(total):
-    text = captions.progress_text(0, total)
+    text = card(0, total)
     assert "Preparing download" in text and "Waiting for the first bytes" in text
     assert "?" not in text and "%" not in text
 
 
 def test_unknown_total_shows_real_received_bytes_without_invented_percentage():
-    text = captions.progress_text(2 * 1024 * 1024, None)
+    text = card(2 * 1024 * 1024, None)
     assert "<b>2.0MB</b> received" in text
     assert "Total size not provided" in text
     assert "?" not in text and "%" not in text and "<code>" not in text
 
 
 def test_unknown_gallery_total_uses_file_count_instead_of_bytes():
-    text = captions.progress_text(3, None, unit="files")
+    text = card(3, None, unit="files")
     assert "<b>3</b> files downloaded" in text and "Total count" in text
     assert "MB" not in text and "3B" not in text
 
 
 def test_known_total_starts_at_zero_without_question_mark():
-    text = captions.progress_text(0, 100)
+    text = card(0, 100)
     assert "<b>0%</b>" in text and "<b>0B</b> / 100B" in text
     assert "?" not in text
 
@@ -96,9 +104,9 @@ def test_known_total_starts_at_zero_without_question_mark():
     "stage",
     [
         captions.QUEUED,
-        captions.progress_text(0, None),
-        captions.progress_text(40, 100),
-        captions.progress_text(100, None),
+        card(0, None),
+        card(40, 100),
+        card(100, None),
         captions.UPLOADING,
         captions.FAILED,
     ],

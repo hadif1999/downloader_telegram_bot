@@ -104,6 +104,16 @@ Before the first bytes arrive the status says "Preparing download". An unknown t
 bytes or file counts without a fabricated percentage or a lone question mark. Photo-caption and
 plain-text status messages use the same layout through queueing, download and upload.
 
+The download thread only records progress in `app/services/progress.Monitor` (under a lock); the
+worker's event loop renders and edits the card on a timer, so a slow or rate-limited Telegram edit
+never stalls the download, and edits are serialized so a late tick can't overwrite a newer stage.
+Cancel: a queued request is cancelled atomically in Redis (`request_cancel`) and the bot redraws the
+card. A running one gets a cancel flag that the worker polls each tick; the next progress report
+raises `Cancelled` (a yt-dlp `DownloadCancelled`, which yt-dlp lets propagate from its hooks), the
+journal moves to `cancelled`, files are removed and nothing is sent. The flag is checked once more
+right before upload; once the journal reaches `sending`, cancellation is refused as too late.
+Only the user stored on the request may cancel it.
+
 ## Regression coverage for the 20 audit findings
 
 | Finding | Fix | Targeted evidence |

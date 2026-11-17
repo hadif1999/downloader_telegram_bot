@@ -16,7 +16,7 @@ from app.models import MediaInfo
 from app.services import cache, captions, media, requests
 from app.services.delivery import CheckpointError, Journal, invalid_file_id, reply_params, send_cached
 from app.services.errors import user_message
-from app.services.keyboards import formats_kb
+from app.services.keyboards import cancel_kb, formats_kb
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +48,8 @@ async def request_download(
         cached = await asyncio.to_thread(cache.get_file_id, info.platform, info.id, fmt, lang)
         if not cached and too_large:
             return captions.TOO_BIG
-        created = await asyncio.to_thread(requests.create, request_id, user_id)
+        media_ref = "|".join([info.platform, info.id, fmt, lang or ""])
+        created = await asyncio.to_thread(requests.create, request_id, user_id, media_ref)
         if not created:
             return captions.BUSY
 
@@ -99,20 +100,20 @@ async def request_download(
         if not cached and too_large:
             await asyncio.to_thread(requests.cancel_queued, request_id, user_id)
             return captions.TOO_BIG
+        stop = cancel_kb(request_id)
         if card is not None:
-            if card.reply_markup is not None:
-                await card.edit_reply_markup(reply_markup=None)
             text = captions.status_caption(info, captions.QUEUED, fmt, lang)
             if card.photo:
-                await card.edit_caption(caption=text)
+                await card.edit_caption(caption=text, reply_markup=stop)
             else:
-                await card.edit_text(text)
+                await card.edit_text(text, reply_markup=stop)
             status_id, is_caption = card.message_id, bool(card.photo)
         else:
             status = await bot.send_message(
                 chat_id,
                 captions.status_caption(info, captions.QUEUED, fmt, lang),
                 reply_parameters=reply_params(reply_to),
+                reply_markup=stop,
             )
             status_id, is_caption = status.message_id, False
             status_card = status

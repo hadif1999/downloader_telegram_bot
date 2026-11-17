@@ -96,13 +96,17 @@ def download_file(
     cache) even for multi-gigabyte files. A failed part is retried on its own instead of
     restarting the download. Servers without Range support are streamed in one response with the
     same periodic flushing.
-    progress(done_bytes, total_bytes_or_None) is called per 1 MB chunk."""
+    progress(done_bytes, total_bytes_or_None, part=, parts=, part_done=, part_size=) is called per
+    1 MB chunk; the part details are omitted while the total size is unknown."""
     headers = {"User-Agent": BROWSER_UA}
     if referer:
         headers["Referer"] = referer
     s = get_settings()
     limit = s.max_file_bytes if max_bytes is None else max_bytes
     part = s.download_part_bytes
+    if progress is not None:
+        report = progress
+        progress = lambda done, total: report(done, total, **part_detail(done, total, part))  # noqa: E731
     with open(dest, "wb") as f:
         done, total, ranged = _first_part(url, headers, timeout, f, part, limit, progress)
         while ranged and total is not None and done < total:
@@ -179,6 +183,21 @@ def _copy(r, f, done: int, total, limit: int, progress, url: str) -> int:
             release_page_cache(f)
             since_flush = 0
     return done
+
+
+def part_detail(done: int, total: int | None, part_bytes: int) -> dict:
+    """Which DOWNLOAD_PART_MB part `done` falls in, for progress reports of files with a known size."""
+    if not total or total <= 0 or part_bytes <= 0:
+        return {}
+    parts = max(1, -(-total // part_bytes))
+    part = min(done // part_bytes + 1, parts)
+    start = (part - 1) * part_bytes
+    return {
+        "part": part,
+        "parts": parts,
+        "part_done": max(0, min(done, total) - start),
+        "part_size": min(part_bytes, total - start),
+    }
 
 
 def release_page_cache(target) -> None:

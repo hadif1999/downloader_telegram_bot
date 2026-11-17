@@ -277,14 +277,17 @@ async def send_cached(
         )
 
 
-async def edit_status(bot: Bot, chat_id: int, msg_id: int, text: str, is_caption: bool) -> None:
+async def edit_status(bot: Bot, chat_id: int, msg_id: int, text: str, is_caption: bool, markup=None) -> None:
+    """Edit the status card. Without `markup` any keyboard (e.g. Cancel) is removed."""
     try:
         if is_caption:
             await bot.edit_message_caption(
-                chat_id=chat_id, message_id=msg_id, caption=text, request_timeout=5
+                chat_id=chat_id, message_id=msg_id, caption=text, reply_markup=markup, request_timeout=5
             )
         else:
-            await bot.edit_message_text(text, chat_id=chat_id, message_id=msg_id, request_timeout=5)
+            await bot.edit_message_text(
+                text, chat_id=chat_id, message_id=msg_id, reply_markup=markup, request_timeout=5
+            )
     except (TelegramAPIError, TimeoutError) as e:
         # "message is not modified", deleted message, flood limits, network blips:
         # a failed status edit must never abort the download itself

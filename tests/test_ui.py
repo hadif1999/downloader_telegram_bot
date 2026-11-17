@@ -61,13 +61,6 @@ def test_result_kb():
     assert parse_cb(b.callback_data)[:4] == ("music", "yt", INFO.id, "mp3")
 
 
-def test_progress_text():
-    assert "<code>▓░░░░░░░░░</code> <b>10%</b>" in captions.progress_text(10, 100)
-    assert "100%" in captions.progress_text(150, 100)
-    assert "Downloading" in captions.progress_text(5, None)
-    assert "<b>2</b> / 4 files" in captions.progress_text(2, 4, unit="files")
-
-
 def test_welcome_lists_platforms():
     text = captions.welcome(PLATFORMS, "bot")
     assert all(name in text for name in ("YouTube", "Instagram", "Threads", "SoundCloud", "Spotify"))

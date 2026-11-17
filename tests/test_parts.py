@@ -66,11 +66,14 @@ def test_large_file_is_fetched_part_by_part_into_one_file(parts, tmp_path):
     server = parts.serve(Server())
     seen = []
     out = common.download_file(
-        "https://cdn.test/v.mp4", tmp_path / "v.mp4", progress=lambda d, t: seen.append((d, t))
+        "https://cdn.test/v.mp4", tmp_path / "v.mp4", progress=lambda d, t, **part: seen.append((d, t, part))
     )
     assert out.read_bytes() == PAYLOAD
     assert server.requests == ["bytes=0-999", "bytes=1000-1999", "bytes=2000-2999", "bytes=3000-3499"]
-    assert seen[-1] == (3500, 3500) and [d for d, _ in seen] == sorted(d for d, _ in seen)
+    assert seen[-1][:2] == (3500, 3500) and [d for d, *_ in seen] == sorted(d for d, *_ in seen)
+    # Each report names the part being fetched, so the status card can show it.
+    assert seen[0][2] == {"part": 1, "parts": 4, "part_done": 500, "part_size": 1000}
+    assert seen[-1][2] == {"part": 4, "parts": 4, "part_done": 500, "part_size": 500}
     # Dirty data never exceeds one flush interval (+ one read), independent of the 1000-byte parts.
     gaps = [b - a for a, b in zip([0, *parts.released], parts.released, strict=False)]
     assert max(gaps) <= 400 + 500 and parts.released[-1] == len(PAYLOAD)
@@ -140,7 +143,7 @@ def test_release_page_cache_keeps_file_contents(tmp_path):
 def test_ytdlp_progress_releases_page_cache_every_part(monkeypatch):
     released = []
     monkeypatch.setattr(ytdlp, "release_page_cache", released.append)
-    progress = ytdlp.Progress(lambda *a: None, None, flush_bytes=100)
+    progress = ytdlp.Progress(lambda *a, **k: None, None, flush_bytes=100)
     for done in (50, 99, 100, 150, 210):
         progress(
             {"status": "downloading", "tmpfilename": "v.part", "downloaded_bytes": done, "total_bytes": 300}

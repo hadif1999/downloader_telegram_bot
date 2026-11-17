@@ -165,6 +165,11 @@ def extracting_caption(platform: str, elapsed: int = 0) -> str:
 
 
 UPLOADING = "📤 <b>Uploading to Telegram</b>\nDownload complete. Sending your file…"
+CANCELLED = "🚫 <b>Download cancelled</b>\nNothing was sent. Pick a format below to start again."
+CANCEL_DONE = "🚫 Download cancelled."
+CANCEL_PENDING = "🛑 Cancelling… the download stops within a few seconds."
+CANCEL_TOO_LATE = "📤 Too late to cancel: the file is already being sent."
+CANCEL_DENIED = "Only the person who started this download can cancel it."
 BUSY = "⏳ You already have a download in progress. Please wait until it finishes."
 EXPIRED = "⌛ This request has expired, please send the link again."
 FAILED = "⚠️ Download failed. Please try again later or pick another format."
@@ -187,31 +192,6 @@ def force_join_caption(titles: str | list[str], notice: str = JOIN_REQUIRED) -> 
         return f"🔒 <b>Join our channel</b>\n\nTo use this bot, join <b>{escape(_short(titles[0], 100))}</b>.\n\n{escape(notice)}"
     listed = "\n".join(f"• <b>{escape(_short(title, 100))}</b>" for title in titles)
     return f"🔒 <b>Join our channels</b>\n\nTo use this bot, join:\n{listed}\n\n{escape(notice)}"
-
-
-def progress_text(done: int, total: int | None, cells: int = 10, unit: str = "bytes") -> str:
-    done = max(0, done)
-    if total is None or total <= 0:
-        if not done:
-            return "⏳ <b>Preparing download</b>\nWaiting for the first bytes…"
-        amount = (
-            f"<b>{done}</b> files downloaded" if unit == "files" else f"<b>{human_size(done)}</b> received"
-        )
-        hint = (
-            "Total count not provided by the source."
-            if unit == "files"
-            else "Total size not provided by the source."
-        )
-        return f"⬇️ <b>Downloading</b>\n{amount}\n<i>{hint}</i>"
-    pct = max(0, min(100, int(done * 100 / total)))
-    filled = pct * cells // 100
-    bar = "▓" * filled + "░" * (cells - filled)
-    amount = (
-        f"<b>{done}</b> / {total} files"
-        if unit == "files"
-        else f"<b>{human_size(done) if done else '0B'}</b> / {human_size(total)}"
-    )
-    return f"⬇️ <b>Downloading</b>\n<code>{bar}</code> <b>{pct}%</b>\n{amount}"
 
 
 def result_caption(info: MediaInfo, bot_username: str) -> str:

@@ -24,6 +24,7 @@ from app.platforms.common import (
     download_file,
     fetch,
     og_tags,
+    part_detail,
     release_page_cache,
     url_key,
 )
@@ -146,12 +147,24 @@ def to_date(info: dict) -> str | None:
 class Progress:
     """Merges yt-dlp per-file progress (video + audio streams) into one counter.
 
+    Reports which stream is downloading, which DOWNLOAD_PART_MB part (or HLS/DASH segment) of it,
+    and the merge / MP3 conversion steps that follow (as `postprocessor_hooks`).
     Also flushes each file being written and drops it from the page cache every FLUSH_BYTES, so
     a multi-gigabyte download doesn't fill the container's memory with dirty pages."""
 
-    def __init__(self, cb: ProgressCb, expected: int | None, flush_bytes: int = FLUSH_BYTES):
+    # yt-dlp postprocessor keys (class name without "FFmpeg"/"PP") -> progress stage
+    POSTPROCESSORS = {
+        "Merger": "merge",
+        "ExtractAudio": "convert",
+        "Metadata": "finalize",
+        "EmbedThumbnail": "finalize",
+    }
+
+    def __init__(
+        self, cb: ProgressCb, expected: int | None, flush_bytes: int = FLUSH_BYTES, part_bytes: int = 0
+    ):
         self.cb, self.expected, self.done, self._seen = cb, expected, 0, set()
-        self.flush_bytes = flush_bytes
+        self.flush_bytes, self.part_bytes = flush_bytes, part_bytes
         self._released: dict[str, int] = {}
 
     def __call__(self, d: dict) -> None:
@@ -160,7 +173,9 @@ class Progress:
             cur = d.get("downloaded_bytes") or 0
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
             grand = self.expected or (self.done + total if total else None)
-            self.cb(self.done + cur, max(grand, self.done + cur) if grand else None)
+            self.cb(
+                self.done + cur, max(grand, self.done + cur) if grand else None, **self._detail(d, cur, total)
+            )
             writing = d.get("tmpfilename") or name
             if writing and cur - self._released.get(writing, 0) >= self.flush_bytes:
                 release_page_cache(writing)
@@ -170,6 +185,26 @@ class Progress:
             self.done += d.get("downloaded_bytes") or d.get("total_bytes") or 0
             if name:
                 release_page_cache(name)
+
+    def _detail(self, d: dict, cur: int, total: int | None) -> dict:
+        detail: dict = {}
+        info = d.get("info_dict") or {}
+        video, audio = info.get("vcodec"), info.get("acodec")
+        if video == "none" and audio not in (None, "none"):
+            detail["track"] = "audio"
+        elif audio == "none" and video not in (None, "none"):
+            detail["track"] = "video"
+        if d.get("fragment_count"):  # HLS/DASH: the source's own segments are the parts
+            detail |= {"part": (d.get("fragment_index") or 0) + 1, "parts": d["fragment_count"]}
+            detail["part"] = min(detail["part"], detail["parts"])
+        elif self.part_bytes:
+            detail |= part_detail(cur, total, self.part_bytes)
+        return detail
+
+    def postprocessed(self, d: dict) -> None:
+        stage = self.POSTPROCESSORS.get(d.get("postprocessor") or "")
+        if stage and d.get("status") == "started":
+            self.cb(self.done, self.done or None, stage=stage)
 
 
 # ---------------------------------------------------------------- platform
@@ -335,6 +370,8 @@ class YtDlpPlatform:
             path=str(video), duration=info.duration, title=info.title, performer=info.uploader
         )
         if fmt == "mp3":
+            size = video.stat().st_size
+            progress(size, size, stage="convert")
             mp3 = dest / "media.mp3"
             cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-vn", "-b:a", "192k", str(mp3)]
             subprocess.run(cmd, check=True, timeout=600)
@@ -349,11 +386,13 @@ class YtDlpPlatform:
         if fo is None:
             raise UserError("This format is no longer available. Please send the link again.")
         audio = fmt == "mp3"
+        tracker = Progress(progress, fo.size if fo else None, part_bytes=get_settings().download_part_bytes)
         opts: dict[str, Any] = {
             **self.ydl_opts(),
             "outtmpl": str(dest / "media.%(ext)s"),
             "format": format_selector(fo.height if fo and not audio else None, lang, audio),
-            "progress_hooks": [Progress(progress, fo.size if fo else None)],
+            "progress_hooks": [tracker],
+            "postprocessor_hooks": [tracker.postprocessed],
             "max_filesize": get_settings().max_source_bytes if audio else get_settings().max_file_bytes,
             # Fetch HTTP formats as byte-range parts (also avoids YouTube's per-request throttling);
             # each part streams to disk, so memory is independent of the file size.

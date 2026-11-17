@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from html import escape
 
@@ -10,10 +11,10 @@ from aiogram.types import CallbackQuery, Message
 from app.bot.errors import acknowledge_callback, report_error
 from app.config import get_settings
 from app.platforms import registry
-from app.services import captions, media
+from app.services import captions, media, requests
 from app.services.delivery import retry_send
 from app.services.jobs import request_download
-from app.services.keyboards import formats_kb, languages_kb, parse_cb
+from app.services.keyboards import CANCEL, SEP, formats_kb, languages_kb, parse_cb
 
 log = logging.getLogger(__name__)
 router = Router(name="callbacks")
@@ -81,3 +82,46 @@ async def on_callback(cq: CallbackQuery, bot: Bot) -> None:
     except Exception as error:
         log.exception("callback failed: %s %s", platform_name, media_id)
         await report_error(msg, error)
+
+
+@router.callback_query(F.data.startswith(CANCEL + SEP))
+async def on_cancel(cq: CallbackQuery) -> None:
+    """Cancel button on a queued or running download's status card."""
+    request_id = cq.data.split(SEP, 1)[1]
+    try:
+        outcome = await asyncio.to_thread(requests.request_cancel, request_id, cq.from_user.id)
+    except Exception:
+        log.exception("cancel failed: request=%s", request_id)
+        await acknowledge_callback(cq, captions.FAILED, show_alert=True)
+        return
+    if outcome == requests.CANCEL_UNKNOWN:
+        await acknowledge_callback(cq, captions.CANCEL_DENIED, show_alert=True)
+    elif outcome == requests.CANCEL_TOO_LATE:
+        await acknowledge_callback(cq, captions.CANCEL_TOO_LATE, show_alert=True)
+    elif outcome == requests.CANCEL_SIGNALLED:
+        await acknowledge_callback(cq, captions.CANCEL_PENDING)  # the worker redraws the card
+    else:
+        await acknowledge_callback(cq, captions.CANCEL_DONE)
+        await _show_cancelled(cq, request_id)
+
+
+async def _show_cancelled(cq: CallbackQuery, request_id: str) -> None:
+    """A queued job never reached a worker, so the bot redraws its card with the format menu."""
+    msg = cq.message
+    if not isinstance(msg, Message):
+        return
+    try:
+        state = await asyncio.to_thread(requests.load, request_id, cq.from_user.id)
+        platform_name, media_id, fmt, lang = (state.get("media", "").split("|") + [""] * 4)[:4]
+        info = await media.resolve_async(platform_name, media_id) if media_id else None
+        if info is None:
+            text, kb = captions.CANCEL_DONE, None
+        else:
+            text = captions.status_caption(info, captions.CANCELLED, fmt, lang or None)
+            kb = formats_kb(info, get_settings().max_file_bytes)
+        if msg.photo:
+            await msg.edit_caption(caption=text, reply_markup=kb)
+        else:
+            await msg.edit_text(text, reply_markup=kb)
+    except Exception:
+        log.exception("couldn't redraw cancelled card: request=%s", request_id)

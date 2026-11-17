@@ -107,7 +107,7 @@ class SoundCloud(YtDlpPlatform):
                 raise UserError("A track in this SoundCloud set is no longer available.")
             track_dest = dest / str(index)
             track_dest.mkdir(parents=True, exist_ok=True)
-            result = self.download_url(item.url, track, "mp3", None, track_dest, lambda *_: None)
+            result = self.download_url(item.url, track, "mp3", None, track_dest, lambda *_, **__: None)
             if Path(result.path).stat().st_size > get_settings().max_file_bytes:
                 raise TooLarge(track.id)
             files.append((result.path, "audio"))

@@ -11,9 +11,21 @@ UX reference: [docs/screenshots](docs/screenshots).
    views/likes/comments, category, date, size per format) and buttons for each resolution,
    MP3, 🖼 thumbnail and 📝 description.
 3. Videos with dubbed audio show a language picker (Original / DE-DE / ES-US / …).
-4. The card turns into "queued", then a live `▓▓▓░░░ 40%` progress bar.
-   Download status puts the current stage, percentage and received size first, followed by a compact
-   title/creator/format line. Sources without a known total show received bytes instead of a fake percentage.
+4. The card turns into "queued", then a live progress card refreshed every 3 s (5 s in groups):
+   ```
+   ⬇️ Downloading · video track
+   ▓▓▓▓▓▓░░░░ 63%
+   📦 1.2GB / 1.9GB
+   🧩 Part 7 of 10 ▓▓░░░░ 35%
+   🚀 12.7MB/s · ⏳ 54s left
+   ⏱ Elapsed 1m 35s
+   ✅ Queue › 🔵 Download › ⚪ Process › ⚪ Upload
+   ```
+   It shows which stream (video/audio track) and which 200 MB byte-range part (or HLS/DASH
+   segment) is being fetched, the speed and time left, then the merge / MP3 conversion /
+   tagging steps and the upload with the final size. Sources without a known total show received
+   bytes instead of a fake percentage. A **✖️ Cancel download** button works until the upload
+   starts (only for the user who asked); the card then offers the format menu again.
 5. The video arrives with a "🎵 Download music from video" button. Each finished file's `file_id`
    is cached, so a repeat request is sent instantly.
 

@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, MagicMock
 
@@ -187,3 +188,46 @@ def test_download_refused_when_disk_is_low(worker, monkeypatch):
         run()
     worker.download.assert_not_called()
     assert storage.LOW_STORAGE in worker.edit.call_args.args[3]
+
+
+def test_live_card_offers_cancel_while_downloading_and_drops_it_for_upload(worker):
+    run()
+    updates = worker.edit.call_args_list
+    assert updates[0].args[5].inline_keyboard[0][0].callback_data == "stop|a"
+    assert updates[-1].args[3].startswith("📤 <b>Uploading to Telegram</b>")
+    assert updates[-1].args[5] is None
+
+
+def test_cancel_pressed_during_download_sends_nothing(worker):
+    def download(info, fmt, lang, dest, progress):
+        assert requests.request_cancel("a", 10) == requests.CANCEL_SIGNALLED
+        p = dest / "media.mp4"
+        p.write_bytes(b"video")
+        return DownloadResult(path=str(p))
+
+    worker.download.side_effect = download
+    run()  # a cancelled download is not a task failure
+    worker.bot.send_video.assert_not_awaited()
+    assert requests.load("a", 10)["phase"] == "cancelled"
+    last = worker.edit.call_args
+    assert last.args[3].startswith(captions.CANCELLED) and last.args[5].inline_keyboard  # format menu
+    assert not attempt_dirs(worker.directory)
+
+
+def test_cancel_interrupts_a_running_download(worker, monkeypatch):
+    monkeypatch.setattr(tasks, "PROGRESS_EVERY_SEC", 0.01)
+    reports = []
+
+    def download(info, fmt, lang, dest, progress):
+        requests.request_cancel("a", 10)
+        for done in range(1000):  # a long download; the ticker notices the flag within a tick
+            reports.append(done)
+            progress(done, 1000)
+            time.sleep(0.005)
+        raise AssertionError("download was not interrupted")
+
+    worker.download.side_effect = download
+    run()
+    assert len(reports) < 1000
+    assert requests.load("a", 10)["phase"] == "cancelled"
+    worker.bot.send_video.assert_not_awaited()

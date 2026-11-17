@@ -64,6 +64,16 @@ def languages_kb(info: MediaInfo, fmt: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+CANCEL = "stop"
+
+
+def cancel_kb(request_id: str) -> InlineKeyboardMarkup:
+    """Shown on the status card while a download is queued or running."""
+    data = f"{CANCEL}{SEP}{request_id}"
+    assert len(data.encode()) <= 64, data
+    return InlineKeyboardMarkup(inline_keyboard=[[Btn(text="✖️ Cancel download", callback_data=data)]])
+
+
 def result_kb(platform: str, media_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
