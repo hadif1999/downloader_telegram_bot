@@ -13,8 +13,8 @@ from aiogram.types import FSInputFile
 
 from app.config import get_settings
 from app.platforms import registry
-from app.platforms.common import download_file
-from app.platforms.ytdlp import TooLarge, UserError
+from app.platforms.common import describe, download_file, retry_delay
+from app.platforms.ytdlp import TooLarge, UserError, retryable
 from app.services import cache, captions, keyboards, media, progress, requests, storage
 from app.services.delivery import CheckpointError, Journal, edit_status, local_file, send_gallery, send_media
 from app.services.errors import user_message
@@ -88,7 +88,7 @@ async def _run(
     journal = None
     slot = None
 
-    monitor = progress.Monitor()
+    monitor = progress.Monitor(timeout=s.download_timeout)
     ticker = None
     edit_lock = asyncio.Lock()
     shown = {"text": None}
@@ -130,6 +130,28 @@ async def _run(
         if monitor.cancel.is_set():
             raise progress.Cancelled
 
+    async def download_with_retries(platform, info):
+        """Re-run a failed download up to DOWNLOAD_RETRIES times in the same directory, so
+        finished parts, finished streams and partial .part files are reused, not fetched again."""
+        for attempt in range(s.download_retries + 1):
+            try:
+                return await asyncio.to_thread(platform.download, info, fmt, lang, dest, monitor)
+            except Exception as error:
+                if attempt == s.download_retries or not retryable(error):
+                    raise
+                wait = retry_delay(attempt + 1)
+                log.warning(
+                    "download attempt %s failed, retrying in %ss: request=%s error=%s",
+                    attempt + 1,
+                    wait,
+                    request_id,
+                    type(error).__name__,
+                )
+                monitor.restarting(attempt + 1, s.download_retries, describe(error), wait)
+                await show()
+                await asyncio.sleep(wait)
+                await check_cancel()
+
     try:
         async with requests.execution(request_id, user_id) as owner:
             try:
@@ -170,7 +192,7 @@ async def _run(
                     await asyncio.to_thread(
                         storage.ensure_space, s.download_dir, download_estimate(info, fmt)
                     )
-                    result = await asyncio.to_thread(platform.download, info, fmt, lang, dest, monitor)
+                    result = await download_with_retries(platform, info)
                 paths = [p for p, _ in result.files] or [result.path]
                 if any(Path(p).stat().st_size > s.max_file_bytes for p in paths):
                     raise TooLarge(media_id)

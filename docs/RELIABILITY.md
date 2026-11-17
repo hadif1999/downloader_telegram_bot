@@ -114,6 +114,19 @@ journal moves to `cancelled`, files are removed and nothing is sent. The flag is
 right before upload; once the journal reaches `sending`, cancellation is refused as too late.
 Only the user stored on the request may cancel it.
 
+Retries and timeouts (`DOWNLOAD_RETRIES`=3, `DOWNLOAD_TIMEOUT`=90 s) work at two levels. Within a
+download, `download_file` retries each byte-range part (or a single-response file) with 2/4/8 s
+back-off, asking only for the bytes after the last one written; yt-dlp gets the same counts as
+`retries`/`fragment_retries`, the timeout as `socket_timeout`, and resumes its `.part` file. The
+timeout is a stall timeout (no data for that long), not a deadline: a 200 MB part at YouTube's
+throttled ~0.4 MB/s takes minutes and must not fail for being slow. yt-dlp has no retry hook, so
+`FileDownloader.report_retry` is wrapped to forward retries to the card (`retry_hook` option).
+If the download still fails with a retryable error (`ytdlp.retryable`: timeouts, dropped
+connections, 408/425/429/5xx, YouTube's expired-URL 403s), the worker re-runs it in the same
+attempt directory, so finished parts and streams are reused; user-facing errors, size limits,
+cancellation and other deterministic failures are not retried. Permanent HTTP errors (404, 410...)
+are not retried at the part level. Only a server that ignores Range restarts from byte 0.
+
 ## Regression coverage for the 20 audit findings
 
 | Finding | Fix | Targeted evidence |

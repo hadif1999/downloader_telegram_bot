@@ -26,6 +26,18 @@ UX reference: [docs/screenshots](docs/screenshots).
    tagging steps and the upload with the final size. Sources without a known total show received
    bytes instead of a fake percentage. A **✖️ Cancel download** button works until the upload
    starts (only for the user who asked); the card then offers the format menu again.
+   Failed transfers are retried (`DOWNLOAD_RETRIES`, default 3) with a stall timeout
+   (`DOWNLOAD_TIMEOUT`, default 90 s of no data) and the card says so:
+   ```
+   ⚠️ Connection problem: the server stopped sending data.
+   🔁 Retry 1 of 3 of part 2 · next try in 2s
+   ♻️ Resuming from 300.0MB, nothing is downloaded twice
+   ```
+   Each retry resumes from the last byte on disk, for a single file or any part of a multipart
+   download. If a download still fails it is re-run (up to the same count) in the same directory, so
+   finished parts, finished video/audio streams and partial files are reused; YouTube URLs that
+   expired (403) are re-extracted on that re-run. After `DOWNLOAD_TIMEOUT` with no data a stall is
+   retried; from 15 s the card already shows "⏸ No data for 20s, retrying after 1m 30s".
 5. The video arrives with a "🎵 Download music from video" button. Each finished file's `file_id`
    is cached, so a repeat request is sent instantly.
 

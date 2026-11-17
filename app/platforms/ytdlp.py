@@ -8,8 +8,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from yt_dlp.networking.exceptions import HTTPError as YtHTTPError
+from yt_dlp.networking.exceptions import TransportError
 from yt_dlp.plugins import load_all_plugins
-from yt_dlp.utils import DownloadError
+from yt_dlp.utils import DownloadCancelled, DownloadError
 
 from app.config import get_settings
 from app.models import DownloadResult, FormatOption, GalleryItem, MediaInfo
@@ -21,11 +23,14 @@ from app.platforms.common import (
     FLUSH_BYTES,
     TooLargeError,
     cookie_file,
+    describe,
     download_file,
     fetch,
+    network_error,
     og_tags,
     part_detail,
     release_page_cache,
+    retry_delay,
     url_key,
 )
 from app.platforms.downloader import YoutubeDL
@@ -43,6 +48,44 @@ TooLarge = TooLargeError  # raised when a file exceeds MAX_FILE_MB
 
 class UserError(Exception):
     """Error whose message is safe and useful to show to the user."""
+
+
+def _retry_sleep(n: int) -> int:
+    return retry_delay(n + 1)  # yt-dlp passes the 0-based retry index
+
+
+RETRYABLE_MESSAGE = re.compile(
+    r"timed out|timeout|connection|reset by peer|incomplete|giving up after|"
+    r"http error (403|408|429|5\d\d)|unable to download video data",
+    re.I,
+)
+
+
+def retryable(error: BaseException | None) -> bool:
+    """Whether re-running a failed download may succeed: network trouble, server errors, or an
+    expired media URL (YouTube's 403s; a re-run extracts fresh URLs). Never user-facing errors,
+    size limits, cancellation, or anything else deterministic."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, (UserError, TooLargeError, DownloadCancelled)):
+            return False
+        if network_error(error):
+            return True
+        if isinstance(error, (TransportError, YtHTTPError)):
+            return (
+                not isinstance(error, YtHTTPError)
+                or error.status in (403, 408, 425, 429)
+                or error.status >= 500
+            )
+        if isinstance(error, DownloadError):
+            cause = error.exc_info[1] if error.exc_info else None
+            if cause is None:
+                return bool(RETRYABLE_MESSAGE.search(str(error)))
+            error = cause
+            continue
+        error = error.__cause__ or error.__context__
+    return False
 
 
 # ---------------------------------------------------------------- format helpers
@@ -164,6 +207,7 @@ class Progress:
         self, cb: ProgressCb, expected: int | None, flush_bytes: int = FLUSH_BYTES, part_bytes: int = 0
     ):
         self.cb, self.expected, self.done, self._seen = cb, expected, 0, set()
+        self.position = 0  # bytes reported so far, across streams
         self.flush_bytes, self.part_bytes = flush_bytes, part_bytes
         self._released: dict[str, int] = {}
 
@@ -173,6 +217,7 @@ class Progress:
             cur = d.get("downloaded_bytes") or 0
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
             grand = self.expected or (self.done + total if total else None)
+            self.position = self.done + cur
             self.cb(
                 self.done + cur, max(grand, self.done + cur) if grand else None, **self._detail(d, cur, total)
             )
@@ -200,6 +245,18 @@ class Progress:
         elif self.part_bytes:
             detail |= part_detail(cur, total, self.part_bytes)
         return detail
+
+    def retried(self, error, count: int, retries: int) -> None:
+        """yt-dlp is retrying a failed request; its HTTP downloader resumes the .part file."""
+        self.cb(
+            self.position,
+            None,
+            retry=count,
+            retries=retries,
+            reason=describe(error),
+            wait=retry_delay(count),
+            kept=self.position,
+        )
 
     def postprocessed(self, d: dict) -> None:
         stage = self.POSTPROCESSORS.get(d.get("postprocessor") or "")
@@ -392,6 +449,13 @@ class YtDlpPlatform:
             "outtmpl": str(dest / "media.%(ext)s"),
             "format": format_selector(fo.height if fo and not audio else None, lang, audio),
             "progress_hooks": [tracker],
+            "retry_hook": tracker.retried,
+            # Per-request retries, resuming the .part file; `socket_timeout` is a stall timeout.
+            "retries": get_settings().download_retries,
+            "fragment_retries": get_settings().download_retries,
+            "socket_timeout": get_settings().download_timeout,
+            "retry_sleep_functions": {"http": _retry_sleep, "fragment": _retry_sleep},
+            "continuedl": True,  # a re-run of the download resumes partial and finished streams
             "postprocessor_hooks": [tracker.postprocessed],
             "max_filesize": get_settings().max_source_bytes if audio else get_settings().max_file_bytes,
             # Fetch HTTP formats as byte-range parts (also avoids YouTube's per-request throttling);

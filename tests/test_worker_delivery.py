@@ -22,7 +22,12 @@ def worker(request_store, monkeypatch, tmp_path):
         "yt", "id", "https://youtu.be/abcdefghijk", "Title", formats=[FormatOption("720", "720p", 10, 720)]
     )
     monkeypatch.setattr(tasks, "make_bot", lambda **kwargs: b)
-    monkeypatch.setattr(tasks, "get_settings", lambda: NS(download_dir=tmp_path, max_file_bytes=1000))
+    monkeypatch.setattr(
+        tasks,
+        "get_settings",
+        lambda: NS(download_dir=tmp_path, max_file_bytes=1000, download_retries=3, download_timeout=90),
+    )
+    monkeypatch.setattr(tasks, "retry_delay", lambda attempt: 0)
     monkeypatch.setattr(tasks.media, "resolve", lambda *a: i)
     monkeypatch.setattr(tasks, "make_thumb", lambda *a: None)
     edit = AsyncMock()
@@ -231,3 +236,43 @@ def test_cancel_interrupts_a_running_download(worker, monkeypatch):
     assert len(reports) < 1000
     assert requests.load("a", 10)["phase"] == "cancelled"
     worker.bot.send_video.assert_not_awaited()
+
+
+def test_transient_failure_reruns_download_in_the_same_directory(worker):
+    seen = []
+
+    def download(info, fmt, lang, dest, progress):
+        seen.append(dest)
+        part = dest / "media.mp4.part"
+        if len(seen) == 1:
+            part.write_bytes(b"vid")  # partial data left by the failed attempt
+            raise TimeoutError("read timed out")
+        assert part.read_bytes() == b"vid"  # the re-run can resume it
+        p = dest / "media.mp4"
+        p.write_bytes(b"video")
+        return DownloadResult(path=str(p))
+
+    worker.download.side_effect = download
+    run()
+    assert seen[0] == seen[1]
+    worker.bot.send_video.assert_awaited_once()
+    assert requests.load("a", 10)["phase"] == "done"
+    texts = [c.args[3] for c in worker.edit.call_args_list]
+    assert any("Download interrupted</b>: the server stopped sending data" in t for t in texts)
+    assert any("Restarting, retry <b>1</b> of 3" in t for t in texts)
+
+
+def test_download_gives_up_after_configured_retries(worker):
+    worker.download.side_effect = TimeoutError("read timed out")
+    with pytest.raises(TimeoutError):
+        run()
+    assert worker.download.call_count == 4  # first attempt + DOWNLOAD_RETRIES
+    assert requests.load("a", 10)["phase"] == "failed"
+    assert not attempt_dirs(worker.directory)
+
+
+def test_deterministic_failures_are_not_retried(worker):
+    worker.download.side_effect = tasks.UserError("This video is private.")
+    with pytest.raises(tasks.UserError):
+        run()
+    assert worker.download.call_count == 1

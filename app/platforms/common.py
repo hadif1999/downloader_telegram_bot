@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import html
+import http.client
 import os
 import re
+import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -76,15 +79,49 @@ CHUNK = 1 << 20  # read/write unit: memory held per download is one chunk, never
 # part size: unflushed (dirty) pages cannot be reclaimed, and with 200 MB between flushes they alone
 # can exceed a small container memory cap (measured: 163 MB dirty for 200 MB parts, 26 MB for 32 MB).
 FLUSH_BYTES = 16 << 20
-PART_RETRIES = 3
-CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+|\*)", re.I)
+CONTENT_RANGE = re.compile(r"bytes (?:(\d+)-(\d+)|\*)/(\d+|\*)", re.I)
+RETRY_HTTP = {408, 425, 429, 500, 502, 503, 504}
+_sleep = time.sleep  # patched in tests
+
+
+def retry_delay(attempt: int) -> int:
+    """Back-off before retry number `attempt` (1-based): 2, 4, 8, then 10 s."""
+    return min(2**attempt, 10)
+
+
+def network_error(error: BaseException) -> bool:
+    """Transient transfer failures worth retrying: timeouts, dropped connections, 5xx/429."""
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in RETRY_HTTP
+    if isinstance(error, urllib.error.URLError):
+        return not isinstance(error.reason, str) or "timed out" in error.reason
+    return isinstance(error, (TimeoutError, ConnectionError, http.client.HTTPException, ssl.SSLError))
+
+
+def describe(error: BaseException) -> str:
+    """Short, user-facing reason for a retry."""
+    text = str(error).lower()
+    code = getattr(error, "code", None) or getattr(error, "status", None)
+    if isinstance(error, TimeoutError) or "timed out" in text or "timeout" in text:
+        return "the server stopped sending data"
+    if isinstance(code, int) and code >= 400:
+        return f"the server replied {code}"
+    if "short part" in text or "incomplete" in text or isinstance(error, http.client.IncompleteRead):
+        return "the connection dropped mid-transfer"
+    if isinstance(error, (ConnectionError, ssl.SSLError, urllib.error.URLError)) or "connection" in text:
+        return "the connection was lost"
+    return "a network error"
+
+
+class ShortPart(ConnectionError):
+    pass
 
 
 def download_file(
     url: str,
     dest: Path,
     referer: str | None = None,
-    timeout: int = 120,
+    timeout: float | None = None,
     progress=None,
     max_bytes: int | None = None,
 ) -> Path:
@@ -93,80 +130,104 @@ def download_file(
     Each part is a Range request written at its offset in the final file (no separate part files
     and no join step, so disk use never doubles). Every FLUSH_BYTES the data is flushed to disk and
     dropped from the page cache, which keeps the memory charged to the container flat (~16 MB of
-    cache) even for multi-gigabyte files. A failed part is retried on its own instead of
-    restarting the download. Servers without Range support are streamed in one response with the
-    same periodic flushing.
-    progress(done_bytes, total_bytes_or_None, part=, parts=, part_done=, part_size=) is called per
-    1 MB chunk; the part details are omitted while the total size is unknown."""
+    cache) even for multi-gigabyte files.
+
+    Failures are retried DOWNLOAD_RETRIES times per part, resuming from the last byte written, so
+    nothing already downloaded is fetched again. `timeout` (default DOWNLOAD_TIMEOUT) is a stall
+    timeout: an attempt fails when no data arrives for that long, however long the part takes.
+    An existing `dest` (left by an earlier attempt of the same download) is resumed the same way.
+    Servers without Range support are streamed in one response and restarted on failure.
+
+    progress(done, total, part=, parts=, part_done=, part_size=) is called per 1 MB chunk; the part
+    details are omitted while the total size is unknown. Before each retry it is called with
+    retry=, retries=, reason=, wait=, kept= instead."""
     headers = {"User-Agent": BROWSER_UA}
     if referer:
         headers["Referer"] = referer
     s = get_settings()
+    timeout = s.download_timeout if timeout is None else timeout
     limit = s.max_file_bytes if max_bytes is None else max_bytes
-    part = s.download_part_bytes
-    if progress is not None:
-        report = progress
-        progress = lambda done, total: report(done, total, **part_detail(done, total, part))  # noqa: E731
-    with open(dest, "wb") as f:
-        done, total, ranged = _first_part(url, headers, timeout, f, part, limit, progress)
-        while ranged and total is not None and done < total:
-            end = min(done + part, total) - 1
-            for attempt in range(PART_RETRIES):
+    part, retries = s.download_part_bytes, s.download_retries
+    report = progress or (lambda *a, **k: None)
+
+    def on_bytes(done, total):
+        report(done, total, **part_detail(done, total, part))
+
+    start = dest.stat().st_size if dest.exists() else 0
+    with open(dest, "r+b" if start else "wb") as f:
+        f.seek(start)
+        done, total, ranged = start, None, True
+        while True:
+            end = done + part - 1 if total is None else min(done + part, total) - 1
+            for attempt in range(retries + 1):
                 try:
-                    _ranged_part(url, headers, timeout, f, done, end, total, progress)
+                    done, total, ranged = _fetch(url, headers, timeout, f, done, end, total, limit, on_bytes)
                     break
-                except OSError:  # includes HTTP and connection errors for this part only
-                    if attempt == PART_RETRIES - 1:
+                except Exception as error:
+                    if attempt == retries or not network_error(error):
                         raise
-                    f.seek(done)
-                    f.truncate()  # discard the incomplete part and fetch it again
-            done = end + 1
+                    f.flush()
+                    done = f.tell() if ranged else 0  # bytes on disk are kept for the next attempt
+                    report(
+                        done,
+                        total,
+                        retry=attempt + 1,
+                        retries=retries,
+                        reason=describe(error),
+                        wait=retry_delay(attempt + 1),
+                        kept=done,
+                        **part_detail(done, total, part),
+                    )
+                    _sleep(retry_delay(attempt + 1))
             release_page_cache(f)
+            if not ranged or total is None or done >= total:
+                break
+        f.truncate(done)  # a resumed file may hold stale bytes past the end
         if total is not None and done != total:
             raise ConnectionError(f"Incomplete download: {done} of {total} bytes")
     return dest
 
 
-def _first_part(url, headers, timeout, f, part, limit, progress) -> tuple[int, int | None, bool]:
-    """Request the first part. Returns (bytes written, total size or None, server supports ranges)."""
-    req = urllib.request.Request(url, headers={**headers, "Range": f"bytes=0-{part - 1}"})
+def _fetch(url, headers, timeout, f, start, end, total, limit, progress) -> tuple[int, int | None, bool]:
+    """Fetch bytes start..end into `f`. Returns (bytes on disk, total size or None, ranged)."""
+    req = urllib.request.Request(url, headers={**headers, "Range": f"bytes={start}-{end}"})
     try:
         response = open_url(req, timeout=timeout)
     except urllib.error.HTTPError as error:
-        if error.code != 416:  # 416: e.g. an empty resource; retry as a plain request
+        if error.code != 416:
             raise
+        # Nothing at or after `start`: either a resumed file that is already complete, or an
+        # empty resource that rejects ranges. Ask for the size, or the body, without a range.
+        whole = CONTENT_RANGE.fullmatch((error.headers or {}).get("Content-Range") or "")
+        if start and whole and whole.group(3) != "*" and int(whole.group(3)) == start:
+            return start, start, True
         response = open_url(urllib.request.Request(url, headers=headers), timeout=timeout)
     with response as r:
         match = CONTENT_RANGE.fullmatch(r.headers.get("Content-Range") or "")
-        if getattr(r, "status", 200) == 206 and match and int(match.group(1)) == 0:
-            total = None if match.group(3) == "*" else int(match.group(3))
-            if total is not None and total > limit:
+        if getattr(r, "status", 200) == 206 and match and match.group(1) and int(match.group(1)) == start:
+            size = None if match.group(3) == "*" else int(match.group(3))
+            if total is not None and size not in (None, total):
+                raise ConnectionError("The file changed on the server mid-download")
+            if size is not None and size > limit:
                 raise TooLargeError(url)
             expected = int(match.group(2)) + 1
-            done = _copy(r, f, 0, total, limit, progress, url)
+            f.seek(start)
+            done = _copy(r, f, start, size, limit, progress, url)
             if done != expected:
-                raise ConnectionError(f"Short part: {done} of {expected} bytes")
-            release_page_cache(f)
-            return done, total, total is not None
-        # No Range support: stream the whole body, still flushing every part.
-        total = int(r.headers.get("Content-Length") or 0) or None
-        if total and total > limit:
-            raise TooLargeError(url)
-        done = _copy(r, f, 0, total, limit, progress, url)
-        release_page_cache(f)
-        return done, total, False
-
-
-def _ranged_part(url, headers, timeout, f, start, end, total, progress) -> None:
-    req = urllib.request.Request(url, headers={**headers, "Range": f"bytes={start}-{end}"})
-    with open_url(req, timeout=timeout) as r:
-        match = CONTENT_RANGE.fullmatch(r.headers.get("Content-Range") or "")
-        if getattr(r, "status", 200) != 206 or not match or int(match.group(1)) != start:
+                raise ShortPart(f"Short part: {done - start} of {expected - start} bytes")
+            return done, size, size is not None
+        if start and total is not None:
             raise ConnectionError("Server stopped honouring byte ranges mid-download")
-        f.seek(start)
-        done = _copy(r, f, start, total, total, progress, url)
-        if done != end + 1:
-            raise ConnectionError(f"Short part: {done - start} of {end - start + 1} bytes")
+        # No Range support (or a resume the server ignored): stream the whole body from byte 0.
+        size = int(r.headers.get("Content-Length") or 0) or None
+        if size and size > limit:
+            raise TooLargeError(url)
+        f.seek(0)
+        f.truncate()
+        done = _copy(r, f, 0, size, limit, progress, url)
+        if size is not None and done != size:
+            raise ShortPart(f"Short download: {done} of {size} bytes")
+        return done, size if size is not None else done, False
 
 
 def _copy(r, f, done: int, total, limit: int, progress, url: str) -> int:

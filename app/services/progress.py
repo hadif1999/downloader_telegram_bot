@@ -10,6 +10,7 @@ Detail keys platforms may send (all optional):
     track      "video" or "audio" while yt-dlp fetches the separate streams of one format
     part/parts current byte-range part (1-based) and the number of parts
     part_done/part_size  bytes of the current part received / its size
+    retry/retries/reason/wait/kept  sent instead of bytes when an attempt failed and is retried
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from app.services.captions import human_size
 CELLS = 10
 PART_CELLS = 6
 SPEED_WINDOW = 12.0  # seconds of samples behind the displayed speed
+STALL_NOTICE = 15  # seconds without data before the card says it is waiting
 STEPS = (("queue", "Queue"), ("download", "Download"), ("process", "Process"), ("upload", "Upload"))
 PROCESS_STAGES = {
     "merge": ("🎞", "Merging video and audio", "Combining both tracks into one MP4 file…"),
@@ -65,7 +67,7 @@ def clock(seconds: float | None) -> str:
 class Monitor:
     """Thread-safe progress state of one download request."""
 
-    def __init__(self, unit: str = "bytes", now=time.monotonic) -> None:
+    def __init__(self, unit: str = "bytes", now=time.monotonic, timeout: float | None = None) -> None:
         self.unit = unit
         self._now = now
         self._lock = threading.Lock()
@@ -78,12 +80,22 @@ class Monitor:
         self.started = now()
         self.stage_started = self.started
         self._samples: deque[tuple[float, int]] = deque()
+        self.timeout = timeout  # stall timeout, shown while no data arrives
+        self.last_data = self.started
+        self.trouble: dict | None = None  # the retry in progress, until data flows again
+        self.retries_used = 0
 
     # --- called from the download thread
     def __call__(self, done: int, total: int | None = None, **detail) -> None:
         if self.cancel.is_set():
             raise Cancelled
         stage = detail.pop("stage", "download")
+        if "retry" in detail:
+            with self._lock:
+                self.done = max(0, done)
+                self.detail = {k: v for k, v in detail.items() if k.startswith("part")}
+                self._retrying("part", detail)
+            return
         with self._lock:
             if stage != "download":
                 self._enter(stage)
@@ -91,6 +103,9 @@ class Monitor:
             if self.stage != "download":
                 self._enter("download")
             now = self._now()
+            if done > self.done or self.stage == "prepare":
+                self.last_data = now
+                self.trouble = None  # data flows again: the retry worked
             self.done, self.total = max(0, done), total if total and total > 0 else None
             self.detail = detail
             if self.unit == "bytes":
@@ -102,6 +117,26 @@ class Monitor:
                     self._samples.popleft()
 
     # --- called from the event loop
+    def restarting(self, retry: int, retries: int, reason: str, wait: float) -> None:
+        """The whole download failed and runs again; files already on disk are reused."""
+        with self._lock:
+            self._retrying("download", {"retry": retry, "retries": retries, "reason": reason, "wait": wait})
+
+    def _retrying(self, scope: str, detail: dict) -> None:
+        now = self._now()
+        self.retries_used += 1
+        self.trouble = {
+            "scope": scope,
+            "retry": detail["retry"],
+            "retries": detail["retries"],
+            "reason": detail.get("reason") or "a network error",
+            "until": now + (detail.get("wait") or 0),
+            "kept": detail.get("kept", self.done),
+            "part": detail.get("part") if (detail.get("parts") or 0) > 1 else None,
+        }
+        self.last_data = now
+        self._samples.clear()  # the stall would drag the speed down after resuming
+
     def set_stage(self, stage: str, size: int | None = None) -> None:
         with self._lock:
             self._enter(stage)
@@ -132,6 +167,8 @@ class Monitor:
         with self._lock:
             now = self._now()
             body = self._body(now)
+            if self.trouble:
+                body += "\n" + self._trouble_lines(now)
             footer = f"⏱ Elapsed {clock(now - self.started)}"
             if self.cancel.is_set() and self.stage != "upload":
                 footer += "\n🛑 <i>Cancelling…</i>"
@@ -194,10 +231,41 @@ class Monitor:
             lines.append("<i>Total size not provided by the source.</i>")
         if part_line := self._part_line():
             lines.append(part_line)
-        rate = f"🚀 {human_size(int(speed))}/s" if speed else "🚀 measuring speed…"
-        if speed and self.total and self.total > self.done:
-            rate += f" · ⏳ {clock((self.total - self.done) / speed)} left"
-        lines.append(rate)
+        if self.trouble:
+            return "\n".join(lines)  # the retry notice replaces speed and ETA
+        idle = self._now() - self.last_data
+        if idle >= STALL_NOTICE:
+            limit = f", retrying after {clock(self.timeout)}" if self.timeout else ""
+            lines.append(f"⏸ No data for {clock(idle)}{limit}")
+        else:
+            rate = f"🚀 {human_size(int(speed))}/s" if speed else "🚀 measuring speed…"
+            if speed and self.total and self.total > self.done:
+                rate += f" · ⏳ {clock((self.total - self.done) / speed)} left"
+            lines.append(rate)
+        if self.retries_used:
+            plural = "retry" if self.retries_used == 1 else "retries"
+            lines.append(f"🔁 Recovered after {self.retries_used} {plural}")
+        return "\n".join(lines)
+
+    def _trouble_lines(self, now: float) -> str:
+        t = self.trouble
+        wait = t["until"] - now
+        when = f"next try in {clock(wait)}" if wait >= 1 else "reconnecting…"
+        if t["scope"] == "download":
+            lines = [
+                f"⚠️ <b>Download interrupted</b>: {escape(t['reason'])}.",
+                f"🔁 Restarting, retry <b>{t['retry']}</b> of {t['retries']} · {when}",
+            ]
+            if t["kept"]:
+                lines.append(f"♻️ {human_size(t['kept'])} already downloaded will be reused")
+            return "\n".join(lines)
+        where = f" of part {t['part']}" if t["part"] else ""
+        lines = [
+            f"⚠️ <b>Connection problem</b>: {escape(t['reason'])}.",
+            f"🔁 Retry <b>{t['retry']}</b> of {t['retries']}{where} · {when}",
+        ]
+        if t["kept"]:
+            lines.append(f"♻️ Resuming from {human_size(t['kept'])}, nothing is downloaded twice")
         return "\n".join(lines)
 
     def _part_line(self) -> str | None:

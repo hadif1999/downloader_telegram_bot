@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from yt_dlp import YoutubeDL as BaseYoutubeDL
+from yt_dlp.downloader.common import FileDownloader
 from yt_dlp.networking._urllib import HTTPHandler, UrllibRH
 
 from app.config import get_settings
@@ -74,3 +75,18 @@ class YoutubeDL(BaseYoutubeDL):
             super().close()
         finally:
             self._cookie_copy.__exit__(None, None, None)
+
+
+_report_retry = FileDownloader.report_retry
+
+
+def _report_retry_to_hook(self, err, count, retries, *args, **kwargs):
+    """yt-dlp has progress hooks but no retry hook: forward its retries to the `retry_hook`
+    option (a callable(error, count, retries)) so the status card can show them."""
+    hook = self.ydl.params.get("retry_hook")
+    if hook and 0 < count <= retries:
+        hook(err, count, retries)
+    return _report_retry(self, err, count, retries, *args, **kwargs)
+
+
+FileDownloader.report_retry = _report_retry_to_hook

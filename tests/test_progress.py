@@ -230,3 +230,117 @@ def test_other_users_cannot_cancel(request_store):
     asyncio.run(callbacks.on_cancel(cq))
     assert cq.answer.await_args.kwargs["show_alert"] is True
     assert requests.load("q", 10)["phase"] == "queued"
+
+
+# --------------------------------------------------------------- retries and timeouts
+
+
+def test_part_retry_notice_then_recovery():
+    now = Clock()
+    m = Monitor(now=now, timeout=90)
+    m(300 * MB, 400 * MB, part=2, parts=2, part_done=100 * MB, part_size=200 * MB)
+    m(
+        300 * MB,
+        400 * MB,
+        retry=1,
+        retries=3,
+        reason="the server stopped sending data",
+        wait=2,
+        kept=300 * MB,
+        part=2,
+        parts=2,
+        part_done=100 * MB,
+        part_size=200 * MB,
+    )
+    text = m.render()
+    assert "⚠️ <b>Connection problem</b>: the server stopped sending data." in text
+    assert "🔁 Retry <b>1</b> of 3 of part 2 · next try in 2s" in text
+    assert "♻️ Resuming from 300.0MB, nothing is downloaded twice" in text
+    assert "🧩 Part <b>2</b> of 2" in text and "🚀" not in text
+    now.t += 3
+    assert "reconnecting…" in m.render()
+    m(301 * MB, 400 * MB)  # data flows again
+    text = m.render()
+    assert "Connection problem" not in text and "🔁 Recovered after 1 retry" in text
+
+
+def test_whole_download_restart_notice():
+    m = Monitor(now=Clock())
+    m(50 * MB, 100 * MB)
+    m.restarting(2, 3, "the server replied 503", 4)
+    text = m.render()
+    assert "⚠️ <b>Download interrupted</b>: the server replied 503." in text
+    assert "🔁 Restarting, retry <b>2</b> of 3 · next try in 4s" in text
+    assert "♻️ 50.0MB already downloaded will be reused" in text
+
+
+def test_stalled_transfer_is_announced_before_the_timeout():
+    now = Clock()
+    m = Monitor(now=now, timeout=90)
+    m(10 * MB, 100 * MB)
+    now.t += 20
+    text = m.render()
+    assert "⏸ No data for 20s, retrying after 1m 30s" in text and "🚀" not in text
+
+
+def test_retry_before_any_data_keeps_preparing_view():
+    m = Monitor(now=Clock())
+    m(0, None, retry=1, retries=3, reason="the connection was lost", wait=2, kept=0)
+    text = m.render()
+    assert "Preparing download" in text and "Retry <b>1</b> of 3 · next try in 2s" in text
+    assert "Resuming" not in text
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (TimeoutError("read timed out"), True),
+        (ConnectionResetError(), True),
+        (ytdlp.DownloadError("ERROR: unable to download video data: HTTP Error 403: Forbidden"), True),
+        (ytdlp.DownloadError("ERROR: Giving up after 3 retries"), True),
+        (ytdlp.DownloadError("ERROR: Video unavailable. This video is private"), False),
+        (ytdlp.DownloadError("wrapped", (None, TimeoutError(), None)), True),
+        (ytdlp.UserError("This format is no longer available."), False),
+        (ytdlp.TooLargeError("x"), False),
+        (Cancelled(), False),
+        (RuntimeError("bug"), False),
+    ],
+)
+def test_retryable_classification(error, expected):
+    assert ytdlp.retryable(error) is expected
+
+
+def test_retryable_follows_causes_but_user_errors_win():
+    try:
+        try:
+            raise TimeoutError
+        except TimeoutError as cause:
+            raise RuntimeError("wrapper") from cause
+    except RuntimeError as error:
+        assert ytdlp.retryable(error)
+    try:
+        try:
+            raise TimeoutError
+        except TimeoutError:
+            raise ytdlp.UserError("Couldn't access this media.") from None
+    except ytdlp.UserError as error:
+        assert not ytdlp.retryable(error)
+
+
+def test_ytdlp_retries_reach_the_status_card():
+    from yt_dlp.downloader.common import FileDownloader
+
+    from app.platforms.downloader import YoutubeDL
+
+    events = []
+    tracker = ytdlp.Progress(lambda *a, **d: events.append(d), None)
+    with YoutubeDL({"quiet": True, "retry_hook": tracker.retried}) as ydl:
+        downloader = FileDownloader(ydl, ydl.params)
+        downloader.report_retry(TimeoutError("timed out"), 1, 3)
+        downloader.report_retry(TimeoutError("timed out"), 0, 3)  # a warning, not a retry
+    assert events == [
+        {"retry": 1, "retries": 3, "reason": "the server stopped sending data", "wait": 2, "kept": 0}
+    ]
+    tracker({"status": "downloading", "downloaded_bytes": 700, "total_bytes": 1000})
+    tracker.retried(TimeoutError(), 2, 3)
+    assert events[-1]["kept"] == 700  # the card says how much is resumed, not refetched
