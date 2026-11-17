@@ -103,7 +103,7 @@ network-layer routing/VPNs remain usable. Only the configured PO-token provider'
 Set `BOT_API_URL=` (empty), `BOT_API_LOCAL=false`, `MAX_FILE_MB=50`. Files are then uploaded over HTTP
 and anything over 50 MB is shown as ❌.
 
-## Development
+## Configuration
 
 ### Require users to join a channel
 
@@ -157,6 +157,8 @@ buttons stop working. Apply changes to both bot and worker with
 `docker compose up -d --force-recreate bot worker` (or restart both processes when running locally).
 Disabling YouTube links does not disable Spotify's internal YouTube audio matching.
 
+## Development
+
 ### Local development
 
 Install Docker with Compose, ffmpeg, and Deno on your host. Set `BOT_TOKEN` in `.env` and enable
@@ -197,7 +199,7 @@ uv run celery -A app.worker.celery_app worker --concurrency=2 -l INFO
 Keep the extractors up to date: `uv lock --upgrade-package yt-dlp --upgrade-package gallery-dl`.
 Sites change often.
 
-### Updating an existing installation
+## Updating an existing installation
 
 Pause incoming requests and let the old workers drain before replacing bot and worker together;
 do not mix old and new worker versions. Then recreate the affected services:

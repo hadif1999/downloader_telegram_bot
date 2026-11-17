@@ -1,7 +1,7 @@
 [project]
 name = "media-downloader-bot"
 version = "0.1.0"
-description = "Telegram bot that downloads media (YouTube first) using yt-dlp, Celery and Redis"
+description = "Telegram bot that downloads videos, photos and music from YouTube, Instagram, TikTok, SoundCloud and other sites using yt-dlp, gallery-dl, Celery and Redis"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

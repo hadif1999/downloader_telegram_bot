@@ -10,3 +10,4 @@ graphify-out/
 *.egg-info/
 cookies/*
 !cookies/.gitkeep
+.serena/
