@@ -117,6 +117,12 @@ mkdir -p /opt/tg_dl/data/{redis,botapi,downloads} && chown 1000:1000 /opt/tg_dl/
 docker compose -p tg_dl -f docker-compose.yml -f docker-compose.prod.yml up -d --no-build
 ```
 
+Memory: each bot/worker process idles at ~75 MB because aiogram's ~460 pydantic models are built on
+first use instead of at import (`app/lean_models.py`; eager builds cost ~175 MB per process). The
+idle stack is ~300 MB, leaving room for one download (`MAX_PARALLEL_DOWNLOADS=1`) inside 500 MB;
+worker pool processes are recycled after a task once they exceed 200 MB. Set
+`AIOGRAM_EAGER_MODELS=1` to restore aiogram's eager model building.
+
 Stop any other instance using the same bot token first (for example a local `uv run main.py` stack):
 two Bot API servers or pollers for one token conflict.
 

@@ -30,6 +30,11 @@ services:
     <<: *limits
     mem_limit: 420m
     pull_policy: never
+    # Recycle a pool process after a task once it exceeds 200 MB, so memory retained by a large
+    # download is returned instead of accumulating inside the shared 500 MB budget.
+    command: >-
+      sh -c "celery -A app.worker.celery_app worker --loglevel=INFO
+      --concurrency=$${MAX_PARALLEL_DOWNLOADS:-1} --max-memory-per-child=204800 --hostname=worker@%h"
 
 volumes:
   redis-data:
