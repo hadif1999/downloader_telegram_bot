@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import html
+import os
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -69,6 +71,15 @@ def og_tags(page: str) -> dict[str, str]:
     return tags
 
 
+CHUNK = 1 << 20  # read/write unit: memory held per download is one chunk, never the file
+# Written data is flushed to disk and dropped from the page cache this often. Kept well below the
+# part size: unflushed (dirty) pages cannot be reclaimed, and with 200 MB between flushes they alone
+# can exceed a small container memory cap (measured: 163 MB dirty for 200 MB parts, 26 MB for 32 MB).
+FLUSH_BYTES = 16 << 20
+PART_RETRIES = 3
+CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+|\*)", re.I)
+
+
 def download_file(
     url: str,
     dest: Path,
@@ -77,23 +88,120 @@ def download_file(
     progress=None,
     max_bytes: int | None = None,
 ) -> Path:
-    """Plain HTTP download; progress(done_bytes, total_bytes_or_None) is called per 1 MB chunk."""
+    """HTTP download in parts of DOWNLOAD_PART_MB, streamed straight into `dest`.
+
+    Each part is a Range request written at its offset in the final file (no separate part files
+    and no join step, so disk use never doubles). Every FLUSH_BYTES the data is flushed to disk and
+    dropped from the page cache, which keeps the memory charged to the container flat (~16 MB of
+    cache) even for multi-gigabyte files. A failed part is retried on its own instead of
+    restarting the download. Servers without Range support are streamed in one response with the
+    same periodic flushing.
+    progress(done_bytes, total_bytes_or_None) is called per 1 MB chunk."""
     headers = {"User-Agent": BROWSER_UA}
     if referer:
         headers["Referer"] = referer
-    req = urllib.request.Request(url, headers=headers)
-    limit = get_settings().max_file_bytes if max_bytes is None else max_bytes
-    with open_url(req, timeout=timeout) as r, open(dest, "wb") as f:
+    s = get_settings()
+    limit = s.max_file_bytes if max_bytes is None else max_bytes
+    part = s.download_part_bytes
+    with open(dest, "wb") as f:
+        done, total, ranged = _first_part(url, headers, timeout, f, part, limit, progress)
+        while ranged and total is not None and done < total:
+            end = min(done + part, total) - 1
+            for attempt in range(PART_RETRIES):
+                try:
+                    _ranged_part(url, headers, timeout, f, done, end, total, progress)
+                    break
+                except OSError:  # includes HTTP and connection errors for this part only
+                    if attempt == PART_RETRIES - 1:
+                        raise
+                    f.seek(done)
+                    f.truncate()  # discard the incomplete part and fetch it again
+            done = end + 1
+            release_page_cache(f)
+        if total is not None and done != total:
+            raise ConnectionError(f"Incomplete download: {done} of {total} bytes")
+    return dest
+
+
+def _first_part(url, headers, timeout, f, part, limit, progress) -> tuple[int, int | None, bool]:
+    """Request the first part. Returns (bytes written, total size or None, server supports ranges)."""
+    req = urllib.request.Request(url, headers={**headers, "Range": f"bytes=0-{part - 1}"})
+    try:
+        response = open_url(req, timeout=timeout)
+    except urllib.error.HTTPError as error:
+        if error.code != 416:  # 416: e.g. an empty resource; retry as a plain request
+            raise
+        response = open_url(urllib.request.Request(url, headers=headers), timeout=timeout)
+    with response as r:
+        match = CONTENT_RANGE.fullmatch(r.headers.get("Content-Range") or "")
+        if getattr(r, "status", 200) == 206 and match and int(match.group(1)) == 0:
+            total = None if match.group(3) == "*" else int(match.group(3))
+            if total is not None and total > limit:
+                raise TooLargeError(url)
+            expected = int(match.group(2)) + 1
+            done = _copy(r, f, 0, total, limit, progress, url)
+            if done != expected:
+                raise ConnectionError(f"Short part: {done} of {expected} bytes")
+            release_page_cache(f)
+            return done, total, total is not None
+        # No Range support: stream the whole body, still flushing every part.
         total = int(r.headers.get("Content-Length") or 0) or None
         if total and total > limit:
             raise TooLargeError(url)
-        while chunk := r.read(1 << 20):
-            f.write(chunk)
-            if f.tell() > limit:
-                raise TooLargeError(url)
-            if progress:
-                progress(f.tell(), total)
-    return dest
+        done = _copy(r, f, 0, total, limit, progress, url)
+        release_page_cache(f)
+        return done, total, False
+
+
+def _ranged_part(url, headers, timeout, f, start, end, total, progress) -> None:
+    req = urllib.request.Request(url, headers={**headers, "Range": f"bytes={start}-{end}"})
+    with open_url(req, timeout=timeout) as r:
+        match = CONTENT_RANGE.fullmatch(r.headers.get("Content-Range") or "")
+        if getattr(r, "status", 200) != 206 or not match or int(match.group(1)) != start:
+            raise ConnectionError("Server stopped honouring byte ranges mid-download")
+        f.seek(start)
+        done = _copy(r, f, start, total, total, progress, url)
+        if done != end + 1:
+            raise ConnectionError(f"Short part: {done - start} of {end - start + 1} bytes")
+
+
+def _copy(r, f, done: int, total, limit: int, progress, url: str) -> int:
+    since_flush = 0
+    while chunk := r.read(CHUNK):
+        f.write(chunk)
+        done += len(chunk)
+        if done > limit:
+            raise TooLargeError(url)
+        if progress:
+            progress(done, total)
+        since_flush += len(chunk)
+        if since_flush >= FLUSH_BYTES:
+            release_page_cache(f)
+            since_flush = 0
+    return done
+
+
+def release_page_cache(target) -> None:
+    """Write a file's dirty pages to disk and drop its cached pages (Linux; no-op elsewhere).
+
+    Page cache for files written in a container is charged to that container's memory limit.
+    Dropping it after each part keeps multi-gigabyte downloads from pressing against the cap."""
+    if not hasattr(os, "posix_fadvise"):
+        return
+    try:
+        if isinstance(target, (str, Path)):
+            fd = os.open(target, os.O_RDONLY)
+            try:
+                os.fdatasync(fd)
+                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            finally:
+                os.close(fd)
+        else:
+            target.flush()
+            os.fdatasync(target.fileno())
+            os.posix_fadvise(target.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+    except OSError:
+        pass  # purely an optimisation
 
 
 class TooLargeError(Exception):

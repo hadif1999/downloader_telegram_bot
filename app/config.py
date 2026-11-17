@@ -104,6 +104,9 @@ class Settings(BaseSettings):
     task_time_limit: int = Field(default=60 * 60, ge=120, le=24 * 3600)
     queue_ttl: int = Field(default=24 * 3600, ge=60, le=7 * 24 * 3600)
     download_dir: Path = Path("/downloads")
+    # Downloads are fetched in byte-range parts of this size, flushed to disk and dropped from the
+    # page cache after each part, so memory use stays flat even for 2 GB files.
+    download_part_mb: int = Field(default=200, ge=1, le=2000)
     # Recently downloaded files kept on disk for retries (LRU); 0 disables retention.
     media_cache_items: int = Field(default=3, ge=0, le=100)
     media_cache_max_mb: int = Field(default=4096, ge=0)
@@ -121,6 +124,10 @@ class Settings(BaseSettings):
     @property
     def max_file_bytes(self) -> int:
         return self.max_file_mb * 1024 * 1024
+
+    @property
+    def download_part_bytes(self) -> int:
+        return self.download_part_mb * 1024 * 1024
 
     @property
     def max_source_bytes(self) -> int:

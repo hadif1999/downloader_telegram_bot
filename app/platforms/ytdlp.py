@@ -18,11 +18,13 @@ from app.platforms.base import ProgressCb
 from app.platforms.common import (
     BROWSER_HEADERS,
     CRAWLER_UA,
+    FLUSH_BYTES,
     TooLargeError,
     cookie_file,
     download_file,
     fetch,
     og_tags,
+    release_page_cache,
     url_key,
 )
 from app.platforms.downloader import YoutubeDL
@@ -142,10 +144,15 @@ def to_date(info: dict) -> str | None:
 
 
 class Progress:
-    """Merges yt-dlp per-file progress (video + audio streams) into one counter."""
+    """Merges yt-dlp per-file progress (video + audio streams) into one counter.
 
-    def __init__(self, cb: ProgressCb, expected: int | None):
+    Also flushes each file being written and drops it from the page cache every FLUSH_BYTES, so
+    a multi-gigabyte download doesn't fill the container's memory with dirty pages."""
+
+    def __init__(self, cb: ProgressCb, expected: int | None, flush_bytes: int = FLUSH_BYTES):
         self.cb, self.expected, self.done, self._seen = cb, expected, 0, set()
+        self.flush_bytes = flush_bytes
+        self._released: dict[str, int] = {}
 
     def __call__(self, d: dict) -> None:
         name = d.get("filename") or d.get("tmpfilename")
@@ -154,9 +161,15 @@ class Progress:
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
             grand = self.expected or (self.done + total if total else None)
             self.cb(self.done + cur, max(grand, self.done + cur) if grand else None)
+            writing = d.get("tmpfilename") or name
+            if writing and cur - self._released.get(writing, 0) >= self.flush_bytes:
+                release_page_cache(writing)
+                self._released[writing] = cur
         elif d["status"] == "finished" and name not in self._seen:
             self._seen.add(name)
             self.done += d.get("downloaded_bytes") or d.get("total_bytes") or 0
+            if name:
+                release_page_cache(name)
 
 
 # ---------------------------------------------------------------- platform
@@ -325,6 +338,7 @@ class YtDlpPlatform:
             mp3 = dest / "media.mp3"
             cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-vn", "-b:a", "192k", str(mp3)]
             subprocess.run(cmd, check=True, timeout=600)
+            release_page_cache(mp3)
             result.path = str(mp3)
         return result
 
@@ -341,6 +355,9 @@ class YtDlpPlatform:
             "format": format_selector(fo.height if fo and not audio else None, lang, audio),
             "progress_hooks": [Progress(progress, fo.size if fo else None)],
             "max_filesize": get_settings().max_source_bytes if audio else get_settings().max_file_bytes,
+            # Fetch HTTP formats as byte-range parts (also avoids YouTube's per-request throttling);
+            # each part streams to disk, so memory is independent of the file size.
+            "http_chunk_size": get_settings().download_part_bytes,
         }
         if audio:
             opts |= {
@@ -366,6 +383,7 @@ class YtDlpPlatform:
             r = next((e for e in r.get("entries") or [] if e), r)
         if not r.get("requested_downloads"):  # skipped by max_filesize
             raise TooLarge(info.id)
+        release_page_cache(r["requested_downloads"][0]["filepath"])  # merged/converted output
         return DownloadResult(
             path=r["requested_downloads"][0]["filepath"],
             width=r.get("width"),
