@@ -23,14 +23,14 @@ uploads), `bgutil-provider` (YouTube PO tokens), `bot` (aiogram polling), `worke
 | Part | Typical | Limit |
 |---|---|---|
 | redis + bot-api + bgutil | ~150 MB | 96m / 192m / 192m |
-| bot idle | ~90 MB | 512m |
-| per metadata lookup (`EXTRACT_SLOTS=2`) | ~40-60 MB (no JS solver; ~320 MB with `YOUTUBE_JS_RUNTIMES=deno`) | in bot |
-| worker idle | ~75 MB | 512m |
-| one download | ~280-350 MB | in worker |
+| bot idle + `EXTRACT_SLOTS=4` lookups | ~90 MB + ~40-60 MB per lookup (no JS solver) | 384m |
+| worker idle (2 pool processes) | ~160 MB | 640m |
+| `MAX_PARALLEL_DOWNLOADS=2` downloads | worker peak ~540 MB incl. page cache | in worker |
 
-The idle stack is ~300 MB; a busy stack (2 lookups + 1 download) is ~900 MB. Per-service limits
-only stop one container from starving its siblings; the slice is the real cap. Scaling: +~350 MB
-per extra download slot, +~125 MB per extra lookup slot, and a second core keeps lookups fast.
+Measured: two parallel 1080p/720p downloads peak at ~960 MB for the slice including reclaimable
+page cache (~560 MB anon) with no OOM kills. Per-service limits only stop one container from
+starving its siblings; the slice is the real cap. YouTube's JS challenge solver is off
+(`YOUTUBE_JS_RUNTIMES` empty): deno needs ~320 MB per solve, which this budget can't afford.
 
 ## First install (once, as root)
 
@@ -41,6 +41,9 @@ truncate -s 10G data.img && mkfs.ext4 -q -m 0 data.img && mkdir -p data
 cp /etc/fstab /root/fstab.bak-before-tg_dl
 echo '/opt/tg_dl/data.img /opt/tg_dl/data ext4 loop,noatime,nofail 0 2' >> /etc/fstab && mount data
 mkdir -p data/{redis,botapi,downloads} && chown 101:101 data/botapi && chown 1000:1000 data/downloads
+# direct I/O for the loop device (otherwise every byte is cached twice and merges crawl)
+cp deploy/tg_dl-loop-dio.service /etc/systemd/system/ && systemctl daemon-reload
+systemctl enable --now tg_dl-loop-dio.service && losetup -l -O NAME,BACK-FILE,DIO
 ```
 
 ## Release

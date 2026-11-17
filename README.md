@@ -138,18 +138,22 @@ them). YouTube's JS challenges are not solved by default (`YOUTUBE_JS_RUNTIMES` 
 ~320 MB per solve for current players, more than the budget allows, and without it every format is
 still listed and downloads run at full speed, while each lookup takes ~2 s instead of ~6.5 s. Set
 `YOUTUBE_JS_RUNTIMES=deno` on a larger host if YouTube starts hiding formats. The bot runs
-`EXTRACT_SLOTS` (2) lookups at once.
+`EXTRACT_SLOTS` (4) lookups at once.
 
-Speed: yt-dlp fetches HTTP formats in 10 MB ranges. YouTube serves ~1 MB of a large range and then
-nearly stalls (measured 0.04 MB/s for 200 MB ranges vs 21-23 MB/s for 10 MB), so this matters more
-than anything else. MP3s are encoded with LAME's fastest algorithm at 192 kbps (~32% faster). On the
-VPS a 26-minute video takes ~2 s to look up, ~10-15 s to download and merge in 1080p, and ~35 s for
-the MP3 (mostly encoding on one core). One download (`MAX_PARALLEL_DOWNLOADS=1`) needs ~280-350 MB;
-worker pool processes are recycled after a task once they exceed 200 MB. Downloads are fetched in
-`DOWNLOAD_PART_MB` (200 MB) byte-range parts written straight into the final file and flushed from
-the page cache every 16 MB, so a 2 GB file needs no more memory than a small one (measured: 2 GB in
-a 150 MB container peaks at 88 MB). Roughly: +350 MB per extra download slot, +125 MB per extra
-lookup slot.
+Speed (measured on the VPS, 26-minute video, 1 CPU, 1 GB):
+- yt-dlp fetches HTTP formats in 10 MB ranges. YouTube serves ~1 MB of a large range and then
+  nearly stalls (0.04 MB/s for 200 MB ranges vs 21-27 MB/s for 10 MB).
+- The bot's lookup is cached for `INFO_CACHE_TTL` (2 h): the format card of a repeat link appears
+  instantly, and the worker downloads straight from the cached stream URLs (trimmed yt-dlp data,
+  ~20-30 KB per link in Redis) instead of looking the link up again; expired URLs fall back to a
+  fresh lookup. First byte of a download: ~0.5 s.
+- Growing files are written back in the background (`sync_file_range`), keeping two 16 MB windows
+  cached instead of stalling on `fdatasync`, and the data loop device uses direct I/O so nothing
+  is cached twice (merges 17-21 s -> ~3 s).
+- MP3s use LAME's fastest algorithm at 192 kbps.
+- Result: lookup ~2 s (first after a restart ~8 s while the PO token is minted), 720p in ~6 s,
+  1080p (126 MB) in ~7 s, MP3 in ~35 s (encoding on one core). Two downloads run at once
+  (`MAX_PARALLEL_DOWNLOADS=2`): 1080p + 720p together finish in ~14 s.
 
 Stop any other instance using the same bot token first (for example a local `uv run main.py` stack):
 two Bot API servers or pollers for one token conflict.
