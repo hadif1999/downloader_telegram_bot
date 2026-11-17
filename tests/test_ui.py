@@ -65,3 +65,38 @@ def test_welcome_lists_platforms():
     text = captions.welcome(PLATFORMS, "bot")
     assert all(name in text for name in ("YouTube", "Instagram", "Threads", "SoundCloud", "Spotify"))
     assert "coming soon" not in text
+
+
+def test_help_guide_covers_lists_and_only_enabled_sources():
+    from types import SimpleNamespace
+
+    text = captions.help_guide(PLATFORMS)
+    for part in ("Playlists and albums", "Several links at once", "/language", "Spotify albums", "2 GB"):
+        assert part in text
+    only_ig = [SimpleNamespace(name="ig", title="Instagram", emoji="📸")]
+    text = captions.help_guide(only_ig)
+    assert "Playlists and albums" not in text and "Spotify" not in text
+    assert "Several links at once" in text
+
+
+def test_help_command_and_button(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from aiogram.types import Message
+
+    from app.bot.handlers import start
+    from app.services.keyboards import HELP, add_to_group_kb
+
+    assert add_to_group_kb("bot").inline_keyboard[0][0].callback_data == HELP
+    message = MagicMock(spec=Message)
+    message.answer = AsyncMock()
+    asyncio.run(start.help_command(message))
+    assert "How to use the bot" in message.answer.await_args.args[0]
+
+    ack = AsyncMock()
+    monkeypatch.setattr(start, "acknowledge_callback", ack)
+    cq = MagicMock(message=message)
+    asyncio.run(start.help_button(cq))
+    ack.assert_awaited_once_with(cq)
+    assert message.answer.await_count == 2

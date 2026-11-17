@@ -211,7 +211,8 @@ def test_full_farsi_status_fits_a_photo_caption():
 def test_buttons_are_translated():
     i18n.use("fa")
     assert keyboards.cancel_kb("r").inline_keyboard[0][0].text == "✖️ لغو دانلود"
-    assert keyboards.add_to_group_kb("bot").inline_keyboard[0][0].text == "افزودن به گروه ⤴️"
+    assert keyboards.add_to_group_kb("bot").inline_keyboard[1][0].text == "افزودن به گروه ⤴️"
+    assert keyboards.add_to_group_kb("bot").inline_keyboard[0][0].text == "📖 راهنمای استفاده"
 
 
 # --------------------------------------------------------------- storage and middleware

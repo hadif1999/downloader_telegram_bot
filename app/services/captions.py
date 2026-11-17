@@ -222,10 +222,84 @@ def welcome(platforms, bot_username: str) -> str:
     lines += [
         "",
         t("• To download, just send me a link to the video, photo or track."),
+        t("• Playlists, albums and several links in one message work too."),
+        t("• For the full guide, send /help."),
         "",
         t("<i>(I also work in groups. To add me to a group, press the button below 👇)</i>"),
         "",
         language_hint(),
+    ]
+    return "\n".join(lines)
+
+
+def help_guide(platforms) -> str:
+    """/help: what the bot can do and how to use it, without technical detail."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    names = {p.name for p in platforms}
+    lines = [
+        t("📖 <b>How to use the bot</b>"),
+        "",
+        t("<b>🔗 One video, photo or track</b>"),
+        t("1. Send me a link (or share it to me from the app)."),
+        t("2. Pick a quality or format from the buttons."),
+        t("3. Follow the progress; press ✖️ Cancel download if you change your mind."),
+        t("Posts with several photos or videos are sent together as an album."),
+    ]
+    sources = []
+    if "yt" in names:
+        sources.append(t("• YouTube playlists and YouTube Music albums"))
+    if "sp" in names:
+        sources.append(t("• Spotify albums and playlists"))
+    if "scl" in names:
+        sources.append(t("• SoundCloud sets"))
+    if sources:
+        lines += ["", t("<b>📃 Playlists and albums</b>"), t("Send a link to:"), *sources]
+        lines += [
+            t("I'll show you the list first. Then you can:"),
+            t("• pick one quality for everything, or 🎵 MP3 for audio only;"),
+            t("• press ☑️ Choose items to tick only the ones you want;"),
+            t("• press 📥 Download. Items arrive one by one, with a card showing the overall progress;"),
+            t("• press ⏹ Stop after this item whenever you've had enough."),
+            t("Up to {n} items per list.", n=settings.collection_max_items),
+        ]
+    lines += [
+        "",
+        t("<b>🧺 Several links at once</b>"),
+        t(
+            "Put up to {n} links in one message. I'll show a summary of everything you asked for, "
+            "and you confirm once.",
+            n=settings.message_max_links,
+        ),
+        "",
+        t("<b>🎵 Music</b>"),
+        t("• Under a downloaded video, press 🎵 Download music from video to get its audio as MP3."),
+    ]
+    if "sp" in names:
+        lines.append(t("• For Spotify links, I find the song and send it to you as MP3."))
+    lines += [
+        "",
+        t("<b>👥 In groups</b>"),
+        t(
+            "Add me to a group and send links there as usual. Only the person who sent a list can use its buttons."
+        ),
+        "",
+        t("<b>💡 Good to know</b>"),
+        t(
+            "• Files up to {size} can be sent.",
+            size=f"{settings.max_file_mb / 1000:g} GB"
+            if settings.max_file_mb >= 1000
+            else f"{settings.max_file_mb} MB",
+        ),
+        t("• Anything downloaded before is sent instantly."),
+        t("• You can run one download at a time; a list waits its turn on its own."),
+        t("• If I say delivery couldn't be confirmed, check the chat before asking again."),
+        "",
+        t("<b>⌨️ Commands</b>"),
+        t("/start: welcome and supported sites"),
+        t("/help: this guide"),
+        t("/language: change the language"),
     ]
     return "\n".join(lines)
 

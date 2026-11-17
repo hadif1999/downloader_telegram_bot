@@ -90,9 +90,17 @@ def result_kb(platform: str, media_id: str) -> InlineKeyboardMarkup:
     )
 
 
+HELP = "help"
+
+
 def add_to_group_kb(bot_username: str) -> InlineKeyboardMarkup:
     url = f"https://t.me/{bot_username}?startgroup=true"
-    return InlineKeyboardMarkup(inline_keyboard=[[Btn(text=t("Add to a group ⤴️"), url=url)]])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [Btn(text=t("📖 Usage guide"), callback_data=HELP)],
+            [Btn(text=t("Add to a group ⤴️"), url=url)],
+        ]
+    )
 
 
 def force_join_kb(links: str | list[tuple[str, str]], user_id: int) -> InlineKeyboardMarkup:

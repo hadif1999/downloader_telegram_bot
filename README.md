@@ -5,7 +5,9 @@ Pinterest, Snapchat, Likee, VK, Facebook, Threads, SoundCloud and Spotify**.
 
 UX reference: [docs/screenshots](docs/screenshots).
 
-1. `/start`: welcome text and an "Add to a group" button.
+1. `/start`: welcome text with "📖 Usage guide" and "Add to a group" buttons. `/help` (or the
+   guide button) sends a plain-language guide: single links, playlists and albums, several links per
+   message, music, groups and limits. It only lists the sources that are enabled.
 2. Send a link: the bot immediately acknowledges it, then shows metadata lookup status with elapsed
    time every five seconds while the site responds. That message becomes the thumbnail and an info card (channel, subscribers, duration,
    views/likes/comments, category, date, size per format) and buttons for each resolution,
