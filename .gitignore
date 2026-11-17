@@ -11,3 +11,4 @@ graphify-out/
 cookies/*
 !cookies/.gitkeep
 .serena/
+CLAUDE.local.md

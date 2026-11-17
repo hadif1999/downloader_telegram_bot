@@ -1,0 +1,123 @@
+# Deployment runbook (shared VPS)
+
+The bot runs as Docker Compose project **`tg_dl`** in `/opt/tg_dl` on a VPS that also hosts other
+stacks. Everything below is designed so the bot can never starve or disturb those services.
+Host-specific values (address, SSH interface) live in the gitignored `CLAUDE.local.md`.
+
+## Layout on the host
+
+| Path | What |
+|---|---|
+| `/opt/tg_dl/` | repository files (from `git archive`), `.env` (mode 600, never committed), `RELEASE` |
+| `/opt/tg_dl/data.img` | 10 GB sparse ext4 image, loop-mounted at `/opt/tg_dl/data` via `/etc/fstab` |
+| `/opt/tg_dl/data/{redis,botapi,downloads}` | bind-backed named volumes (owners: botapi `101:101`, downloads `1000:1000`) |
+| `/etc/systemd/system/tg_dl.slice` | copy of `deploy/tg_dl.slice`: 1 CPU, MemoryHigh 960M, MemoryMax 1024M, no swap, IOWeight 50 |
+| `/opt/tg_dl/build.log` | log of the last image build |
+
+Containers (`docker compose -p tg_dl ps`): `redis`, `telegram-bot-api` (local Bot API, 2 GB
+uploads), `bgutil-provider` (YouTube PO tokens), `bot` (aiogram polling), `worker` (Celery,
+`MAX_PARALLEL_DOWNLOADS=1`). All run with `cgroup_parent: tg_dl.slice`; no ports are published.
+
+## Memory budget (1 GB slice)
+
+| Part | Typical | Limit |
+|---|---|---|
+| redis + bot-api + bgutil | ~150 MB | 96m / 192m / 192m |
+| bot idle | ~75 MB | 448m |
+| per metadata lookup (`EXTRACT_SLOTS=2`) | ~110-125 MB (deno heap capped at 64 MB) | in bot |
+| worker idle | ~75 MB | 512m |
+| one download | ~280-350 MB | in worker |
+
+The idle stack is ~300 MB; a busy stack (2 lookups + 1 download) is ~900 MB. Per-service limits
+only stop one container from starving its siblings; the slice is the real cap. Scaling: +~350 MB
+per extra download slot, +~125 MB per extra lookup slot, and a second core keeps lookups fast.
+
+## First install (once, as root)
+
+```sh
+cd /opt/tg_dl                                   # repository files + .env
+cp deploy/tg_dl.slice /etc/systemd/system/ && systemctl daemon-reload
+truncate -s 10G data.img && mkfs.ext4 -q -m 0 data.img && mkdir -p data
+cp /etc/fstab /root/fstab.bak-before-tg_dl
+echo '/opt/tg_dl/data.img /opt/tg_dl/data ext4 loop,noatime,nofail 0 2' >> /etc/fstab && mount data
+mkdir -p data/{redis,botapi,downloads} && chown 101:101 data/botapi && chown 1000:1000 data/downloads
+```
+
+## Release
+
+Uploads to the VPS are slow (~150 KB/s), so the image is **built on the VPS** from the source,
+with a builder capped at 500 MB / 1 CPU so the build can't hurt the other stacks.
+
+```sh
+# 1. from the dev machine: ship source and config (secrets never go through git)
+git archive --format=tar HEAD | gzip | ssh root@HOST 'cd /opt/tg_dl && gunzip | tar -x'
+ssh root@HOST 'umask 077; cat > /opt/tg_dl/.env.new && mv /opt/tg_dl/.env.new /opt/tg_dl/.env' < .env
+
+# 2. on the VPS: build (detached; watch build.log)
+cd /opt/tg_dl
+docker buildx inspect tgdl-builder >/dev/null 2>&1 || docker buildx create --name tgdl-builder \
+  --driver docker-container --driver-opt memory=500m --driver-opt memory-swap=500m \
+  --driver-opt cpu-quota=100000 --driver-opt cpu-period=100000
+REV=<git short sha>
+nohup nice -n 10 docker buildx build --builder tgdl-builder --load -t media-downloader-bot:$REV . > build.log 2>&1 &
+# wait: `pgrep -x docker-buildx` (never `pgrep -f "buildx build"`: it matches the ssh shell itself)
+
+# 3. switch
+docker tag media-downloader-bot:$REV media-downloader-bot:latest
+cp deploy/tg_dl.slice /etc/systemd/system/ && systemctl daemon-reload   # if the slice changed
+docker compose -p tg_dl -f docker-compose.yml -f docker-compose.prod.yml up -d --no-build
+echo $REV > RELEASE
+
+# 4. clean up: the builder holds ~1 GB of cache and an idle container
+docker buildx rm tgdl-builder
+docker image ls media-downloader-bot      # keep the previous tag for rollback, prune older ones
+```
+
+`systemctl daemon-reload` applies new slice limits to the running slice immediately
+(`systemctl show tg_dl.slice -p MemoryMax`).
+
+## Verify
+
+```sh
+docker compose -p tg_dl ps                                   # all Up, bot/worker not restarting
+docker compose -p tg_dl logs --since 5m bot worker | tail -50
+#   bot: "Start polling" / "Run polling for bot @..."; worker: "celery@... ready."
+systemctl status tg_dl.slice | head -8                       # Memory: current vs max
+docker stats --no-stream $(docker compose -p tg_dl ps -q)
+docker ps --format '{{.Names}} {{.Status}}' | grep -v tg_dl  # the other stacks stay healthy
+```
+
+Functional check from Telegram: `/start` (Farsi welcome with the `/language` hint), `/language`
+(🇮🇷/🇬🇧 buttons), a short video link (format card, live progress card, file delivered), and
+`✖️ لغو دانلود` on a large format.
+
+A download can also be exercised without Telegram, inside the worker container:
+
+```sh
+docker compose -p tg_dl exec -T worker python - <<'EOF'
+from pathlib import Path; import tempfile
+from app.platforms import registry
+p, mid, url = registry.detect("https://www.youtube.com/watch?v=jNQXAC9IVRw")
+info = p.extract(url); print(info.title, [f.key for f in info.formats])
+with tempfile.TemporaryDirectory(dir="/downloads") as d:
+    r = p.download(info, info.formats[0].key, None, Path(d), lambda *a, **k: None)
+    print(r.path, Path(r.path).stat().st_size)
+EOF
+```
+
+## Rollback
+
+```sh
+docker tag media-downloader-bot:<previous sha> media-downloader-bot:latest
+docker compose -p tg_dl -f docker-compose.yml -f docker-compose.prod.yml up -d --no-build
+```
+Redis state (queue, file_id cache, language choices) is compatible across these releases.
+
+## Rules for this host
+
+- Touch only Compose project `tg_dl`, `/opt/tg_dl`, `tg_dl.slice` and the `tgdl-builder` builder.
+  Never `docker system prune`, restart the daemon, or change other projects' containers/networks.
+- Only one instance per bot token: stop any local stack (`docker compose down`) before testing on
+  the VPS, or the two Bot API servers/pollers conflict.
+- `.env` stays mode 600; never print token values (check with `sha256sum .env | cut -c1-12`).
+- Use `ssh -T` with a `timeout` for scripted commands; sessions over the VPN can hang otherwise.
