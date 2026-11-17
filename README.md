@@ -134,9 +134,17 @@ Step-by-step install, release, verification, monitoring and rollback: [docs/DEPL
 Memory budget (measured on the VPS): the idle stack is ~300 MB; each bot/worker process idles at
 ~75 MB because aiogram's ~460 pydantic models are built on first use instead of at import
 (`app/lean_models.py`; eager builds cost ~175 MB per process; `AIOGRAM_EAGER_MODELS=1` restores
-them). A metadata lookup takes ~110-125 MB, mostly deno solving YouTube's JS challenges, whose heap
-is capped with `DENO_V8_FLAGS=--max-old-space-size=64` in the image (~300 MB uncapped); the bot runs
-`EXTRACT_SLOTS` (2) lookups at once. One download (`MAX_PARALLEL_DOWNLOADS=1`) needs ~280-350 MB;
+them). YouTube's JS challenges are not solved by default (`YOUTUBE_JS_RUNTIMES` empty): deno needs
+~320 MB per solve for current players, more than the budget allows, and without it every format is
+still listed and downloads run at full speed, while each lookup takes ~2 s instead of ~6.5 s. Set
+`YOUTUBE_JS_RUNTIMES=deno` on a larger host if YouTube starts hiding formats. The bot runs
+`EXTRACT_SLOTS` (2) lookups at once.
+
+Speed: yt-dlp fetches HTTP formats in 10 MB ranges. YouTube serves ~1 MB of a large range and then
+nearly stalls (measured 0.04 MB/s for 200 MB ranges vs 21-23 MB/s for 10 MB), so this matters more
+than anything else. MP3s are encoded with LAME's fastest algorithm at 192 kbps (~32% faster). On the
+VPS a 26-minute video takes ~2 s to look up, ~10-15 s to download and merge in 1080p, and ~35 s for
+the MP3 (mostly encoding on one core). One download (`MAX_PARALLEL_DOWNLOADS=1`) needs ~280-350 MB;
 worker pool processes are recycled after a task once they exceed 200 MB. Downloads are fetched in
 `DOWNLOAD_PART_MB` (200 MB) byte-range parts written straight into the final file and flushed from
 the page cache every 16 MB, so a 2 GB file needs no more memory than a small one (measured: 2 GB in

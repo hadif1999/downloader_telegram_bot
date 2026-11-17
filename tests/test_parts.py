@@ -285,7 +285,9 @@ def test_ytdlp_downloads_in_http_range_chunks(monkeypatch, tmp_path):
 
     info = MediaInfo("yt", "id", "https://youtu.be/x", "t", formats=[FormatOption("720", "720p", 1, 720)])
     ytdlp.YtDlpPlatform().download_url(info.url, info, "720", None, tmp_path, lambda *a: None)
-    assert captured["http_chunk_size"] == 200 * 1024 * 1024
+    # Small ranges: YouTube nearly stalls large range requests (0.04 vs 21 MB/s measured).
+    assert captured["http_chunk_size"] == 10 * 1024 * 1024
+    assert captured["js_runtimes"] == {}  # challenge solving is off unless YOUTUBE_JS_RUNTIMES is set
     # Retries and the stall timeout follow DOWNLOAD_RETRIES / DOWNLOAD_TIMEOUT (defaults 3 / 90 s).
     assert captured["retries"] == captured["fragment_retries"] == 3
     assert captured["socket_timeout"] == 90 and captured["continuedl"] is True

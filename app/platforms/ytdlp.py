@@ -50,6 +50,13 @@ class UserError(Exception):
     """Error whose message is safe and useful to show to the user."""
 
 
+# yt-dlp byte-range size for HTTP formats (see the comment where it is used).
+YTDLP_CHUNK_BYTES = 10 << 20
+# LAME's fastest algorithm at the same 192 kbps: ~32% faster MP3 encoding on one core
+# (measured: 26 min of audio in 29 s instead of 43 s).
+MP3_SPEED = ["-compression_level", "9"]
+
+
 def _retry_sleep(n: int) -> int:
     return retry_delay(n + 1)  # yt-dlp passes the 0-based retry index
 
@@ -299,6 +306,8 @@ class YtDlpPlatform:
             "retries": 10,
             "fragment_retries": 10,
             "socket_timeout": 30,
+            # JavaScript challenge solving (deno) for YouTube; empty = off. See Settings.youtube_js_runtime.
+            "js_runtimes": {name: {} for name in get_settings().youtube_js_runtimes},
         }
         if cookies := cookie_file(self.title.lower()):
             opts["cookiefile"] = str(cookies)
@@ -430,7 +439,19 @@ class YtDlpPlatform:
             size = video.stat().st_size
             progress(size, size, stage="convert")
             mp3 = dest / "media.mp3"
-            cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-vn", "-b:a", "192k", str(mp3)]
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(video),
+                "-vn",
+                "-b:a",
+                "192k",
+                *MP3_SPEED,
+                str(mp3),
+            ]
             subprocess.run(cmd, check=True, timeout=600)
             release_page_cache(mp3)
             result.path = str(mp3)
@@ -458,9 +479,10 @@ class YtDlpPlatform:
             "continuedl": True,  # a re-run of the download resumes partial and finished streams
             "postprocessor_hooks": [tracker.postprocessed],
             "max_filesize": get_settings().max_source_bytes if audio else get_settings().max_file_bytes,
-            # Fetch HTTP formats as byte-range parts (also avoids YouTube's per-request throttling);
-            # each part streams to disk, so memory is independent of the file size.
-            "http_chunk_size": get_settings().download_part_bytes,
+            # Fetch HTTP formats in small byte ranges. YouTube serves ~1 MB of a large range and then
+            # nearly stalls (measured on the VPS: 200 MB ranges 0.04 MB/s, 10 MB ranges 21-23 MB/s).
+            # Each range streams to disk, so memory is independent of the size.
+            "http_chunk_size": YTDLP_CHUNK_BYTES,
         }
         if audio:
             opts |= {
@@ -470,6 +492,7 @@ class YtDlpPlatform:
                     {"key": "FFmpegMetadata"},
                     {"key": "EmbedThumbnail"},
                 ],
+                "postprocessor_args": {"extractaudio+ffmpeg_o": MP3_SPEED},
             }
         else:
             opts |= {"merge_output_format": "mp4", "format_sort": ["res", "vcodec:h264", "acodec:aac"]}

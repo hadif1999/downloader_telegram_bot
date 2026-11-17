@@ -24,7 +24,7 @@ uploads), `bgutil-provider` (YouTube PO tokens), `bot` (aiogram polling), `worke
 |---|---|---|
 | redis + bot-api + bgutil | ~150 MB | 96m / 192m / 192m |
 | bot idle | ~90 MB | 512m |
-| per metadata lookup (`EXTRACT_SLOTS=2`) | ~110-125 MB (deno heap capped at 64 MB) | in bot |
+| per metadata lookup (`EXTRACT_SLOTS=2`) | ~40-60 MB (no JS solver; ~320 MB with `YOUTUBE_JS_RUNTIMES=deno`) | in bot |
 | worker idle | ~75 MB | 512m |
 | one download | ~280-350 MB | in worker |
 

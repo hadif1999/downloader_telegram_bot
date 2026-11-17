@@ -51,6 +51,15 @@ class Settings(BaseSettings):
             raise ValueError(f"FORCE_JOIN_CHANNEL_ID accepts at most {MAX_FORCE_JOIN_CHANNELS} channels")
         return channels
 
+    @field_validator("youtube_js_runtimes", mode="before")
+    @classmethod
+    def js_runtimes(cls, value):
+        names = [str(item).strip().lower() for item in _items(value) if str(item).strip()]
+        unknown = set(names) - {"deno", "node", "bun", "quickjs"}
+        if unknown:
+            raise ValueError(f"YOUTUBE_JS_RUNTIMES: unknown runtime(s) {sorted(unknown)}")
+        return names
+
     @field_validator("force_join_channel_url", mode="before")
     @classmethod
     def channel_urls(cls, value):
@@ -109,6 +118,11 @@ class Settings(BaseSettings):
     # Downloads are fetched in byte-range parts of this size, flushed to disk and dropped from the
     # page cache after each part, so memory use stays flat even for 2 GB files.
     download_part_mb: int = Field(default=200, ge=1, le=2000)
+    # JavaScript runtimes yt-dlp may use for YouTube's "n"/signature challenges (comma list, e.g.
+    # "deno"); empty disables them. Off by default: solving needs ~320 MB per run, which the 1 GB
+    # budget can't afford, while downloads stay fast without it (all formats listed, 21 MB/s), and
+    # every lookup is ~4.5 s faster. Enable on a larger host if YouTube starts hiding formats.
+    youtube_js_runtimes: Annotated[list[str], NoDecode] = []
     # Metadata lookups (link -> format menu) running at once in the bot; the rest wait their turn.
     extract_slots: int = Field(default=2, ge=1, le=16)
     # Retries per part (and per whole download); each retry resumes from the bytes already on disk.

@@ -84,3 +84,26 @@ def test_disabled_platform_cannot_use_cached_metadata(monkeypatch):
     monkeypatch.setattr(media.cache, "load_info", unexpected_cache_read)
     with pytest.raises(KeyError):
         media.resolve("yt", "0MNVhXEX9to")
+
+
+def test_youtube_js_runtimes_setting(monkeypatch):
+    from app.config import Settings
+
+    assert Settings(bot_token="1:x").youtube_js_runtimes == []
+    assert Settings(bot_token="1:x", youtube_js_runtimes="deno, node").youtube_js_runtimes == ["deno", "node"]
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown runtime"):
+        Settings(bot_token="1:x", youtube_js_runtimes="python")
+
+
+def test_js_runtimes_reach_ytdlp(monkeypatch):
+    from types import SimpleNamespace as NS
+
+    from app.platforms import ytdlp
+
+    real = ytdlp.get_settings()
+    monkeypatch.setattr(
+        ytdlp, "get_settings", lambda: NS(**{**real.__dict__, "youtube_js_runtimes": ["deno"]})
+    )
+    assert ytdlp.YtDlpPlatform().ydl_opts()["js_runtimes"] == {"deno": {}}
