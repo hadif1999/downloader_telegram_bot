@@ -139,7 +139,7 @@ class Settings(BaseSettings):
         return value
 
     # JavaScript runtimes yt-dlp may use for YouTube's "n"/signature challenges (comma list, e.g.
-    # "deno"); empty disables them. Off by default: solving needs ~320 MB per run, which the 1 GB
+    # "deno"); empty disables them. Off by default: solving needs ~320 MB per run, which the 1.5 GB
     # budget can't afford, while downloads stay fast without it (all formats listed, 21 MB/s), and
     # every lookup is ~4.5 s faster. Enable on a larger host if YouTube starts hiding formats.
     youtube_js_runtimes: Annotated[list[str], NoDecode] = []

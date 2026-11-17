@@ -5,7 +5,7 @@
 #   whole bot at 1.5 GB RAM (no swap) and one CPU core, with lower I/O priority than other services:
 #   ~450 MB idle stack + 4 metadata lookups (EXTRACT_SLOTS, ~50 MB each) + 2 downloads.
 #   Per-service limits below only stop one container from starving its siblings inside that budget.
-# * Persistent data lives on a dedicated 10 GB filesystem mounted at DATA_DIR (deploy/README.md),
+# * Persistent data lives on a dedicated 10 GB filesystem mounted at DATA_DIR (docs/DEPLOYMENT.md),
 #   so downloads can never fill the host disk; the worker's MIN_FREE_DISK_MB guard measures it.
 # * No ports are published; nothing here touches other Compose projects or the Docker daemon.
 

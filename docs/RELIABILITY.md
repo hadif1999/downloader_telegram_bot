@@ -141,8 +141,9 @@ Segmented downloads keep these invariants:
 - **Cancel and errors**: progress is reported from the calling thread only; an exception there
   (`Cancelled`) or in any connection stops all of them, saves the table and is re-raised.
 - **Memory**: each connection holds one 1 MB read buffer and its own writeback windows of
-  `FLUSH_BYTES / connections`, so cached dirty data per download stays ~2 x 16 MB. yt-dlp has no retry hook, so
-`FileDownloader.report_retry` is wrapped to forward retries to the card (`retry_hook` option).
+  `FLUSH_BYTES / connections`, so cached dirty data per download stays ~2 x 16 MB.
+
+yt-dlp has no retry hook, so `FileDownloader.report_retry` is wrapped to forward retries to the card (`retry_hook` option).
 If the download still fails with a retryable error (`ytdlp.retryable`: timeouts, dropped
 connections, 408/425/429/5xx, YouTube's expired-URL 403s), the worker re-runs it in the same
 attempt directory, so finished ranges and streams are reused; user-facing errors, size limits,
