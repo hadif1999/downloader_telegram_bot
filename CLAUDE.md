@@ -44,6 +44,6 @@ retries, cancel, disk retention: the invariants the tests protect), `docs/DEPLOY
 - **Progress callbacks** are `progress(done, total, **detail)`; detail keys are documented at the
   top of `app/services/progress.py`. Raising `Cancelled` from them aborts yt-dlp cleanly.
 - **Speed**: keep yt-dlp's `http_chunk_size` small (10 MB): YouTube stalls large ranges.
-- **Memory** is the production constraint (1 GB slice for the whole stack). Don't add eager
+- **Memory** is the production constraint (1.5 GB slice for the whole stack: bot 512 MB, worker 1 GB). Don't add eager
   imports of heavy modules to the bot, keep downloads streaming to disk, keep deno's heap cap.
 - **Never** retry or resend after Telegram may have accepted an upload (see RELIABILITY.md).

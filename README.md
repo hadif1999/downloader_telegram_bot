@@ -126,7 +126,7 @@ network-layer routing/VPNs remain usable. Only the configured PO-token provider'
 ### Deploying on a shared VPS
 
 `docker-compose.prod.yml` runs the stack as Compose project `tg_dl` inside the systemd slice
-`deploy/tg_dl.slice`: **1 GB RAM in total** (no swap), one CPU core, and lower disk I/O priority than
+`deploy/tg_dl.slice`: **1.5 GB RAM in total** (bot 512 MB, worker 1 GB) (no swap), one CPU core, and lower disk I/O priority than
 other services. Redis, Bot API and download data live on a dedicated 10 GB filesystem, so the bot
 cannot fill the host disk. No ports are published and the Docker daemon configuration is unchanged.
 Step-by-step install, release, verification, monitoring and rollback: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
@@ -140,7 +140,7 @@ still listed and downloads run at full speed, while each lookup takes ~2 s inste
 `YOUTUBE_JS_RUNTIMES=deno` on a larger host if YouTube starts hiding formats. The bot runs
 `EXTRACT_SLOTS` (4) lookups at once.
 
-Speed (measured on the VPS, 26-minute video, 1 CPU, 1 GB):
+Speed (measured on the VPS, 26-minute video, 1 CPU, 1 GB slice before the raise to 1.5 GB):
 - yt-dlp fetches HTTP formats in 10 MB ranges. YouTube serves ~1 MB of a large range and then
   nearly stalls (0.04 MB/s for 200 MB ranges vs 21-27 MB/s for 10 MB).
 - The bot's lookup is cached for `INFO_CACHE_TTL` (2 h): the format card of a repeat link appears

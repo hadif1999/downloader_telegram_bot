@@ -8,11 +8,11 @@ Before=slices.target
 CPUAccounting=yes
 CPUQuota=100%
 MemoryAccounting=yes
-# 1 GB budget, measured on the VPS: ~300 MB idle stack, two metadata lookups at ~125 MB each
-# (deno heap capped at 64 MB), one download at ~280-350 MB (yt-dlp/ffmpeg + bounded page cache).
+# 1.5 GB budget for the whole stack. Measured on the VPS: ~450 MB idle (incl. page cache),
+# 4 lookups at ~40-60 MB each, 2 parallel downloads peaking at ~540 MB for the worker.
 # Reclaim/throttle first, hard OOM limit second; never push the bot into host swap.
-MemoryHigh=960M
-MemoryMax=1024M
+MemoryHigh=1440M
+MemoryMax=1536M
 MemorySwapMax=0
 TasksMax=1024
 # Lower than the default 100 so other services on the host keep disk priority.

@@ -11,20 +11,20 @@ Host-specific values (address, SSH interface) live in the gitignored `CLAUDE.loc
 | `/opt/tg_dl/` | repository files (from `git archive`), `.env` (mode 600, never committed), `RELEASE` |
 | `/opt/tg_dl/data.img` | 10 GB sparse ext4 image, loop-mounted at `/opt/tg_dl/data` via `/etc/fstab` |
 | `/opt/tg_dl/data/{redis,botapi,downloads}` | bind-backed named volumes (owners: botapi `101:101`, downloads `1000:1000`) |
-| `/etc/systemd/system/tg_dl.slice` | copy of `deploy/tg_dl.slice`: 1 CPU, MemoryHigh 960M, MemoryMax 1024M, no swap, IOWeight 50 |
+| `/etc/systemd/system/tg_dl.slice` | copy of `deploy/tg_dl.slice`: 1 CPU, MemoryHigh 1440M, MemoryMax 1536M, no swap, IOWeight 50 |
 | `/opt/tg_dl/build.log` | log of the last image build |
 
 Containers (`docker compose -p tg_dl ps`): `redis`, `telegram-bot-api` (local Bot API, 2 GB
 uploads), `bgutil-provider` (YouTube PO tokens), `bot` (aiogram polling), `worker` (Celery,
 `MAX_PARALLEL_DOWNLOADS=1`). All run with `cgroup_parent: tg_dl.slice`; no ports are published.
 
-## Memory budget (1 GB slice)
+## Memory budget (1.5 GB slice)
 
 | Part | Typical | Limit |
 |---|---|---|
 | redis + bot-api + bgutil | ~150 MB | 96m / 192m / 192m |
 | bot idle + `EXTRACT_SLOTS=4` lookups | ~90 MB + ~40-60 MB per lookup (no JS solver) | 512m |
-| worker idle (2 pool processes) | ~160 MB | 1g (= the slice; it gets what the others leave) |
+| worker idle (2 pool processes) | ~160 MB | 1g |
 | `MAX_PARALLEL_DOWNLOADS=2` downloads | worker peak ~540 MB incl. page cache | in worker |
 
 Measured: two parallel 1080p/720p downloads peak at ~960 MB for the slice including reclaimable
@@ -79,7 +79,7 @@ docker image ls media-downloader-bot      # keep the previous tag for rollback, 
 After changing the slice file, `systemctl daemon-reload` is not always enough: an earlier
 `systemctl set-property --runtime` leaves drop-ins in `/run/systemd/system.control/tg_dl.slice.d/`
 that win over the unit file until reboot. Apply live limits with
-`systemctl set-property --runtime tg_dl.slice MemoryHigh=960M MemoryMax=1024M` and confirm with
+`systemctl set-property --runtime tg_dl.slice MemoryHigh=1440M MemoryMax=1536M` and confirm with
 `cat /sys/fs/cgroup/tg_dl.slice/memory.max`.
 
 ## Verify
