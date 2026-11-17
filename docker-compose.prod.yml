@@ -39,7 +39,7 @@ services:
     # download is returned instead of accumulating inside the shared budget.
     command: >-
       sh -c "celery -A app.worker.celery_app worker --loglevel=INFO
-      --concurrency=$${MAX_PARALLEL_DOWNLOADS:-1} --max-memory-per-child=204800 --hostname=worker@%h"
+      --concurrency=$${MAX_PARALLEL_DOWNLOADS:-2} --max-memory-per-child=204800 --hostname=worker@%h"
 
 volumes:
   redis-data:

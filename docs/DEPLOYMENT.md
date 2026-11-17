@@ -16,7 +16,7 @@ Host-specific values (address, SSH interface) live in the gitignored `CLAUDE.loc
 
 Containers (`docker compose -p tg_dl ps`): `redis`, `telegram-bot-api` (local Bot API, 2 GB
 uploads), `bgutil-provider` (YouTube PO tokens), `bot` (aiogram polling), `worker` (Celery,
-`MAX_PARALLEL_DOWNLOADS=1`). All run with `cgroup_parent: tg_dl.slice`; no ports are published.
+`MAX_PARALLEL_DOWNLOADS=2`). All run with `cgroup_parent: tg_dl.slice`; no ports are published.
 
 ## Memory budget (1.5 GB slice)
 

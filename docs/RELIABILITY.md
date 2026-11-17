@@ -94,7 +94,7 @@ bounded local files, not unsupported remote JPEG document URLs.
 
 Caption construction retains complete HTML, bounds visible UTF-16 lengths, and reserves room for
 status/action text. Descriptions are split as plain text and sent with HTML parsing disabled.
-Callbacks acknowledge immediately and share the same extraction limiter (`EXTRACT_SLOTS`, default 2) as new links.
+Callbacks acknowledge immediately and share the same extraction limiter (`EXTRACT_SLOTS`, default 4) as new links.
 Synchronous Redis and Celery publication run in threads with bounded service timeouts.
 
 Download status messages put the current stage first, followed by a monospaced progress bar,
