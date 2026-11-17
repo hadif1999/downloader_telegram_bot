@@ -1,3 +1,4 @@
+import logging
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -115,9 +116,28 @@ class Settings(BaseSettings):
     task_time_limit: int = Field(default=60 * 60, ge=120, le=24 * 3600)
     queue_ttl: int = Field(default=24 * 3600, ge=60, le=7 * 24 * 3600)
     download_dir: Path = Path("/downloads")
-    # Downloads are fetched in byte-range parts of this size, flushed to disk and dropped from the
-    # page cache after each part, so memory use stays flat even for 2 GB files.
-    download_part_mb: int = Field(default=200, ge=1, le=2000)
+    # Parallel connections per file (IDM/aria2-style segmented downloads). Connections are added one
+    # at a time while they still raise the speed; 1 downloads over a single connection.
+    download_connections: int = Field(default=4, ge=1, le=8)
+    # A range is only split between connections while both halves stay at least this large, so
+    # small files use one connection.
+    download_min_split_mb: int = Field(default=8, ge=1, le=1024)
+    # Upper bound of the adaptive request size (each connection starts at 4 MB and doubles while
+    # the speed holds). YouTube is always capped at 10 MB: its large ranges stall.
+    download_chunk_max_mb: int = Field(default=64, ge=1, le=1024)
+    # Obsolete (fixed 200 MB parts); ignored, with a warning, by the adaptive downloader.
+    download_part_mb: int | None = None
+
+    @field_validator("download_part_mb")
+    @classmethod
+    def obsolete_part_size(cls, value):
+        if value is not None:
+            logging.getLogger(__name__).warning(
+                "DOWNLOAD_PART_MB is obsolete and ignored: part sizes now adapt to each download "
+                "(see DOWNLOAD_CONNECTIONS, DOWNLOAD_MIN_SPLIT_MB, DOWNLOAD_CHUNK_MAX_MB)"
+            )
+        return value
+
     # JavaScript runtimes yt-dlp may use for YouTube's "n"/signature challenges (comma list, e.g.
     # "deno"); empty disables them. Off by default: solving needs ~320 MB per run, which the 1 GB
     # budget can't afford, while downloads stay fast without it (all formats listed, 21 MB/s), and
@@ -150,8 +170,12 @@ class Settings(BaseSettings):
         return self.max_file_mb * 1024 * 1024
 
     @property
-    def download_part_bytes(self) -> int:
-        return self.download_part_mb * 1024 * 1024
+    def download_min_split_bytes(self) -> int:
+        return self.download_min_split_mb * 1024 * 1024
+
+    @property
+    def download_chunk_max_bytes(self) -> int:
+        return self.download_chunk_max_mb * 1024 * 1024
 
     @property
     def max_source_bytes(self) -> int:

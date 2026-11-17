@@ -16,13 +16,13 @@ UX reference: [docs/screenshots](docs/screenshots).
    ⬇️ Downloading · video track
    ▓▓▓▓▓▓░░░░ 63%
    📦 1.2GB / 1.9GB
-   🧩 Part 7 of 10 ▓▓░░░░ 35%
+   🔗 4 parallel connections
    🚀 12.7MB/s · ⏳ 54s left
    ⏱ Elapsed 1m 35s
    ✅ Queue › 🔵 Download › ⚪ Process › ⚪ Upload
    ```
-   It shows which stream (video/audio track) and which 200 MB byte-range part (or HLS/DASH
-   segment) is being fetched, the speed and time left, then the merge / MP3 conversion /
+   It shows which stream (video/audio track) is being fetched and over how many parallel
+   connections (or which HLS/DASH segment), the speed and time left, then the merge / MP3 conversion /
    tagging steps and the upload with the final size. Sources without a known total show received
    bytes instead of a fake percentage. A **✖️ Cancel download** button works until the upload
    starts (only for the user who asked); the card then offers the format menu again.
@@ -30,12 +30,12 @@ UX reference: [docs/screenshots](docs/screenshots).
    (`DOWNLOAD_TIMEOUT`, default 90 s of no data) and the card says so:
    ```
    ⚠️ Connection problem: the server stopped sending data.
-   🔁 Retry 1 of 3 of part 2 · next try in 2s
+   🔁 Retry 1 of 3 · next try in 2s
    ♻️ Resuming from 300.0MB, nothing is downloaded twice
    ```
-   Each retry resumes from the last byte on disk, for a single file or any part of a multipart
-   download. If a download still fails it is re-run (up to the same count) in the same directory, so
-   finished parts, finished video/audio streams and partial files are reused; YouTube URLs that
+   Each retry resumes from the last byte on disk, for every range of a segmented download. If a
+   download still fails it is re-run (up to the same count) in the same directory, so finished
+   ranges, finished video/audio streams and partial files are reused; YouTube URLs that
    expired (403) are re-extracted on that re-run. After `DOWNLOAD_TIMEOUT` with no data a stall is
    retried; from 15 s the card already shows "⏸ No data for 20s, retrying after 1m 30s".
 5. The video arrives with a "🎵 Download music from video" button. Each finished file's `file_id`
@@ -140,9 +140,24 @@ still listed and downloads run at full speed, while each lookup takes ~2 s inste
 `YOUTUBE_JS_RUNTIMES=deno` on a larger host if YouTube starts hiding formats. The bot runs
 `EXTRACT_SLOTS` (4) lookups at once.
 
-Speed (measured on the VPS, 26-minute video, 1 CPU, 1 GB slice before the raise to 1.5 GB):
-- yt-dlp fetches HTTP formats in 10 MB ranges. YouTube serves ~1 MB of a large range and then
-  nearly stalls (0.04 MB/s for 200 MB ranges vs 21-27 MB/s for 10 MB).
+**Segmented downloads.** Files of known size are fetched like IDM/aria2 do
+(`app/platforms/segmented.py`, also used by yt-dlp for HTTP formats): up to `DOWNLOAD_CONNECTIONS`
+(4) parallel connections, each writing its own byte range at its offset in the final file.
+Connections are added one per second while each still raises the speed; a server refusing another
+connection (403/429/503) lowers the limit instead of failing. A connection that finishes takes half
+of the largest remaining range (ranges are never split below `DOWNLOAD_MIN_SPLIT_MB`, 8 MB, so
+small files use one connection), and one running at under a quarter of the others' speed for 15 s
+hands half of its range over. Each connection's request size starts at 4 MB and doubles while the
+speed holds, up to `DOWNLOAD_CHUNK_MAX_MB` (64 MB; YouTube 10 MB: it serves ~1 MB of a large range
+and then nearly stalls, 0.04 MB/s for 200 MB ranges vs 21-27 MB/s for 10 MB). Progress is saved in
+`<file>.segments.json`, so a re-run resumes every range. Servers without byte ranges or a known
+size are streamed over one connection. Measured against a local server throttled to 2 MB/s per
+connection: 1 connection 2.0 MB/s, 2 connections 3.9 MB/s, 4 connections 6.5 MB/s.
+`DOWNLOAD_CONNECTIONS=1` turns parallel connections off.
+
+Speed (measured on the VPS, 26-minute video, 1 CPU, 1 GB slice before the raise to 1.5 GB, before
+segmented downloads):
+- yt-dlp fetched HTTP formats in 10 MB ranges over one connection.
 - The bot's lookup is cached for `INFO_CACHE_TTL` (2 h): the format card of a repeat link appears
   instantly, and the worker downloads straight from the cached stream URLs (trimmed yt-dlp data,
   ~20-30 KB per link in Redis) instead of looking the link up again; expired URLs fall back to a

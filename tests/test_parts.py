@@ -1,11 +1,12 @@
 import io
+import json
 import os
 import urllib.error
 from types import SimpleNamespace as NS
 
 import pytest
 
-from app.platforms import common, ytdlp
+from app.platforms import common, segmented, ytdlp
 
 PAYLOAD = os.urandom(3500)
 
@@ -70,12 +71,27 @@ class Server:
 
 @pytest.fixture
 def parts(monkeypatch):
-    s = NS(download_part_bytes=1000, max_file_bytes=10_000, download_retries=3, download_timeout=7)
+    """download_file over one connection with a fixed 400-byte request size: deterministic requests.
+    tests/test_segmented.py covers parallel connections and the adaptive request size."""
+    s = NS(
+        max_file_bytes=10_000,
+        download_retries=3,
+        download_timeout=7,
+        download_connections=1,
+        download_min_split_bytes=1000,
+        download_chunk_max_bytes=1000,
+    )
     monkeypatch.setattr(common, "get_settings", lambda: s)
     sleeps = []
     monkeypatch.setattr(common, "_sleep", sleeps.append)
-    monkeypatch.setattr(common, "CHUNK", 500)  # smaller reads than a part, as with real files
-    monkeypatch.setattr(common, "FLUSH_BYTES", 400)  # flush more often than a part, as in production
+    monkeypatch.setattr(segmented, "_pause", lambda event, seconds: sleeps.append(seconds))
+    monkeypatch.setattr(segmented, "MIN_CHUNK", 100)
+    monkeypatch.setattr(segmented, "FIRST_CHUNK", 400)
+    monkeypatch.setattr(segmented, "TICK", 0.001)
+    monkeypatch.setattr(segmented, "REPORT_EVERY", 0)
+    monkeypatch.setattr(segmented.Chunker, "measured", lambda self, nbytes, seconds: None)
+    monkeypatch.setattr(common, "CHUNK", 500)  # reads up to 500 bytes, as with real files
+    monkeypatch.setattr(common, "FLUSH_BYTES", 400)  # flush often, as in production
     released = []
     step = common.Writeback.step
     # Record how far the file was written each time background writeback was started.
@@ -90,25 +106,27 @@ def parts(monkeypatch):
     return NS(settings=s, released=released, serve=serve, sleeps=sleeps)
 
 
-def test_large_file_is_fetched_part_by_part_into_one_file(parts, tmp_path):
+RANGES = [f"bytes={a}-{min(a + 400, 3500) - 1}" for a in range(0, 3500, 400)]
+
+
+def test_large_file_is_fetched_range_by_range_into_one_file(parts, tmp_path):
     server = parts.serve(Server())
     seen = []
     out = common.download_file(
-        "https://cdn.test/v.mp4", tmp_path / "v.mp4", progress=lambda d, t, **part: seen.append((d, t, part))
+        "https://cdn.test/v.mp4", tmp_path / "v.mp4", progress=lambda d, t, **k: seen.append((d, t, k))
     )
     assert out.read_bytes() == PAYLOAD
-    assert server.requests == ["bytes=0-999", "bytes=1000-1999", "bytes=2000-2999", "bytes=3000-3499"]
+    # The probe (first request) reveals the size and is also the first range of the download.
+    assert server.requests == RANGES
     assert seen[-1][:2] == (3500, 3500) and [d for d, *_ in seen] == sorted(d for d, *_ in seen)
-    # Each report names the part being fetched, so the status card can show it.
-    assert seen[0][2] == {"part": 1, "parts": 4, "part_done": 500, "part_size": 1000}
-    assert seen[-1][2] == {"part": 4, "parts": 4, "part_done": 500, "part_size": 500}
-    # Dirty data never exceeds one flush interval (+ one read), independent of the 1000-byte parts.
+    assert all(t == 3500 for _, t, _ in seen) and "part" not in seen[0][2]
+    # Dirty data never exceeds one flush window (+ one read).
     gaps = [b - a for a, b in zip([0, *parts.released], parts.released, strict=False)]
-    assert max(gaps) <= 400 + 500 and parts.released[-1] == len(PAYLOAD)
-    assert list(tmp_path.iterdir()) == [out]  # no separate part files to join
+    assert gaps and max(gaps) <= 400 + 500
+    assert list(tmp_path.iterdir()) == [out]  # no part files to join, no segment table left
 
 
-def test_failed_part_resumes_from_the_bytes_already_written(parts, tmp_path):
+def test_failed_request_resumes_from_the_bytes_already_written(parts, tmp_path):
     server = parts.serve(Server(fail={2000: 1, 2010: 1}))
     retries = []
     out = common.download_file(
@@ -117,25 +135,15 @@ def test_failed_part_resumes_from_the_bytes_already_written(parts, tmp_path):
         progress=lambda d, t, **k: retries.append(k) if "retry" in k else None,
     )
     assert out.read_bytes() == PAYLOAD
-    # Each retry asks only for the rest of the part: nothing received is fetched twice.
-    assert server.requests == [
-        "bytes=0-999",
-        "bytes=1000-1999",
-        "bytes=2000-2999",
-        "bytes=2010-2999",
-        "bytes=2020-2999",
-        "bytes=3000-3499",
-    ]
-    assert [(r["retry"], r["retries"], r["kept"], r["part"]) for r in retries] == [
-        (1, 3, 2010, 3),
-        (2, 3, 2020, 3),
-    ]
+    # Each retry asks only for what is missing, with a smaller request: nothing is fetched twice.
+    assert server.requests[5:8] == ["bytes=2000-2399", "bytes=2010-2209", "bytes=2020-2119"]
+    assert [(r["retry"], r["retries"], r["kept"]) for r in retries] == [(1, 3, 2010), (2, 3, 2020)]
     assert retries[0]["reason"] == "the connection dropped mid-transfer"
     assert parts.sleeps == [2, 4]  # back-off between attempts
 
 
-def test_stalled_part_times_out_and_resumes(parts, tmp_path):
-    server = parts.serve(Server(stall={1000: 1}))
+def test_stalled_request_times_out_and_resumes(parts, tmp_path):
+    server = parts.serve(Server(stall={1200: 1}))
     reasons = []
     out = common.download_file(
         "https://cdn.test/v.mp4",
@@ -143,25 +151,27 @@ def test_stalled_part_times_out_and_resumes(parts, tmp_path):
         progress=lambda d, t, **k: reasons.append(k.get("reason")),
     )
     assert out.read_bytes() == PAYLOAD
-    assert "bytes=1010-1999" in server.requests
+    assert any(r.startswith("bytes=1210-") for r in server.requests)
     assert "the server stopped sending data" in reasons
     assert set(server.timeouts) == {7}  # DOWNLOAD_TIMEOUT is the per-request stall timeout
 
 
-def test_part_failing_every_retry_raises(parts, tmp_path):
-    server = parts.serve(Server(dead_from=1000))
+def test_request_failing_every_retry_raises_and_keeps_the_segment_table(parts, tmp_path):
+    server = parts.serve(Server(dead_from=1200))
     with pytest.raises(ConnectionError, match="Short part"):
         common.download_file("https://cdn.test/v.mp4", tmp_path / "v.mp4")
-    assert server.requests.count("bytes=1000-1999") == 4  # first try + DOWNLOAD_RETRIES
-    assert (tmp_path / "v.mp4").stat().st_size == 1000  # finished parts stay for a later re-run
+    assert sum(r.startswith("bytes=1200-") for r in server.requests) == 4  # first try + retries
+    # The file is preallocated; the table records what is on disk for a later re-run.
+    table = json.loads((tmp_path / "v.mp4.segments.json").read_text())
+    assert table == {"total": 3500, "segments": [[0, 3500, 1200]]}
 
 
 def test_retries_can_be_disabled(parts, tmp_path):
     parts.settings.download_retries = 0
-    server = parts.serve(Server(fail={1000: 1}))
+    server = parts.serve(Server(fail={400: 1}))
     with pytest.raises(ConnectionError):
         common.download_file("https://cdn.test/v.mp4", tmp_path / "v.mp4")
-    assert server.requests == ["bytes=0-999", "bytes=1000-1999"]
+    assert server.requests == ["bytes=0-399", "bytes=400-799"]
 
 
 def test_permanent_http_errors_are_not_retried(parts, tmp_path, monkeypatch):
@@ -177,7 +187,18 @@ def test_permanent_http_errors_are_not_retried(parts, tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
-def test_rerun_resumes_a_partial_file_left_by_an_earlier_attempt(parts, tmp_path):
+def test_rerun_resumes_from_the_segment_table(parts, tmp_path):
+    parts.serve(Server(dead_from=1200))
+    with pytest.raises(ConnectionError):
+        common.download_file("https://cdn.test/v.mp4", tmp_path / "v.mp4")
+    server = parts.serve(Server())
+    out = common.download_file("https://cdn.test/v.mp4", tmp_path / "v.mp4")
+    assert out.read_bytes() == PAYLOAD
+    assert server.requests[0] == "bytes=1200-1599"  # nothing before 1200 is fetched again
+    assert not (tmp_path / "v.mp4.segments.json").exists()
+
+
+def test_rerun_resumes_a_partial_file_of_a_single_stream_download(parts, tmp_path):
     (tmp_path / "v.mp4").write_bytes(PAYLOAD[:1500])
     server = parts.serve(Server())
     seen = []
@@ -185,15 +206,16 @@ def test_rerun_resumes_a_partial_file_left_by_an_earlier_attempt(parts, tmp_path
         "https://cdn.test/v.mp4", tmp_path / "v.mp4", progress=lambda d, t, **k: seen.append(d)
     )
     assert out.read_bytes() == PAYLOAD
-    assert server.requests == ["bytes=1500-2499", "bytes=2500-3499"]
-    assert seen[0] > 1500  # progress continues from the reused bytes
+    assert server.requests[0] == "bytes=1500-1899"
+    assert all(int(r.split("=")[1].split("-")[0]) >= 1500 for r in server.requests)
+    assert seen[0] >= 1500  # progress continues from the reused bytes
 
 
 def test_rerun_of_a_complete_file_downloads_nothing(parts, tmp_path):
     (tmp_path / "v.mp4").write_bytes(PAYLOAD)
     server = parts.serve(Server())
     assert common.download_file("https://cdn.test/v.mp4", tmp_path / "v.mp4").read_bytes() == PAYLOAD
-    assert server.requests == ["bytes=3500-4499"]
+    assert server.requests == ["bytes=3500-3899"]
 
 
 def test_rerun_against_a_server_without_ranges_starts_over(parts, tmp_path):
@@ -206,7 +228,8 @@ def test_server_without_range_support_streams_once(parts, tmp_path):
     server = parts.serve(Server(ranges=False))
     out = common.download_file("https://cdn.test/v.mp4", tmp_path / "v.mp4")
     assert out.read_bytes() == PAYLOAD
-    assert server.requests == ["bytes=0-999"]
+    # The probe's reply shows there are no ranges; one plain stream then fetches the file.
+    assert server.requests == ["bytes=0-399", "bytes=0-999"]
     gaps = [b - a for a, b in zip([0, *parts.released], parts.released, strict=False)]
     assert max(gaps) <= 400 + 500  # still flushed periodically while streaming
 
@@ -221,18 +244,19 @@ def test_range_rejection_falls_back_to_plain_request(parts, tmp_path):
     server = parts.serve(Server(empty_range_416=True))
     out = common.download_file("https://cdn.test/v.mp4", tmp_path / "v.mp4")
     assert out.read_bytes() == PAYLOAD
-    assert server.requests == ["bytes=0-999", None]
+    assert server.requests == ["bytes=0-399", "bytes=0-999", None]
 
 
-def test_oversized_total_is_rejected_from_first_part_header(parts, tmp_path):
+def test_oversized_total_is_rejected_from_the_probe(parts, tmp_path):
     server = parts.serve(Server())
     with pytest.raises(common.TooLargeError):
         common.download_file("https://cdn.test/v.mp4", tmp_path / "v.mp4", max_bytes=3000)
-    assert server.requests == ["bytes=0-999"]
+    assert server.requests == ["bytes=0-399"]
 
 
-def test_small_file_needs_a_single_request(parts, tmp_path):
-    parts.settings.download_part_bytes = 1 << 20
+def test_small_file_needs_a_single_request(parts, tmp_path, monkeypatch):
+    monkeypatch.setattr(segmented, "FIRST_CHUNK", 1 << 20)
+    parts.settings.download_connections = 4
     server = parts.serve(Server())
     assert common.download_file("https://cdn.test/v.mp4", tmp_path / "v.mp4").read_bytes() == PAYLOAD
     assert server.requests == ["bytes=0-1048575"]
@@ -261,7 +285,7 @@ def test_ytdlp_progress_releases_page_cache_every_part(monkeypatch):
     assert released == ["v.part", "v.part", "v.mp4"]
 
 
-def test_ytdlp_downloads_in_http_range_chunks(monkeypatch, tmp_path):
+def test_ytdlp_download_options(monkeypatch, tmp_path):
     captured = {}
 
     class FakeYDL:
@@ -284,7 +308,9 @@ def test_ytdlp_downloads_in_http_range_chunks(monkeypatch, tmp_path):
 
     info = MediaInfo("yt", "id", "https://youtu.be/x", "t", formats=[FormatOption("720", "720p", 1, 720)])
     ytdlp.YtDlpPlatform().download_url(info.url, info, "720", None, tmp_path, lambda *a: None)
-    # Small ranges: YouTube nearly stalls large range requests (0.04 vs 21 MB/s measured).
+    # HTTP formats go through the segmented downloader (DOWNLOAD_CONNECTIONS); yt-dlp's own
+    # downloader, used otherwise, keeps small ranges: YouTube nearly stalls large range requests.
+    assert captured["segmented_http"] == captured["concurrent_fragment_downloads"] == 4
     assert captured["http_chunk_size"] == 10 * 1024 * 1024
     assert captured["js_runtimes"] == {}  # challenge solving is off unless YOUTUBE_JS_RUNTIMES is set
     # Retries and the stall timeout follow DOWNLOAD_RETRIES / DOWNLOAD_TIMEOUT (defaults 3 / 90 s).

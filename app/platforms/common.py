@@ -10,6 +10,7 @@ import http.client
 import os
 import re
 import ssl
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -95,6 +96,11 @@ def network_error(error: BaseException) -> bool:
     """Transient transfer failures worth retrying: timeouts, dropped connections, 5xx/429."""
     if isinstance(error, urllib.error.HTTPError):
         return error.code in RETRY_HTTP
+    if yt := sys.modules.get("yt_dlp.networking.exceptions"):  # only loaded where yt-dlp is in use
+        if isinstance(error, yt.HTTPError):
+            return error.status in RETRY_HTTP
+        if isinstance(error, yt.TransportError):
+            return not isinstance(error, yt.CertificateVerifyError)
     if isinstance(error, urllib.error.URLError):
         return not isinstance(error.reason, str) or "timed out" in error.reason
     return isinstance(error, (TimeoutError, ConnectionError, http.client.HTTPException, ssl.SSLError))
@@ -108,7 +114,12 @@ def describe(error: BaseException) -> str:
         return "the server stopped sending data"
     if isinstance(code, int) and code >= 400:
         return f"the server replied {code}"
-    if "short part" in text or "incomplete" in text or isinstance(error, http.client.IncompleteRead):
+    if (
+        "short part" in text
+        or "incomplete" in text
+        or "bytes read" in text
+        or isinstance(error, http.client.IncompleteRead)
+    ):
         return "the connection dropped mid-transfer"
     if isinstance(error, (ConnectionError, ssl.SSLError, urllib.error.URLError)) or "connection" in text:
         return "the connection was lost"
@@ -127,34 +138,62 @@ def download_file(
     progress=None,
     max_bytes: int | None = None,
 ) -> Path:
-    """HTTP download in parts of DOWNLOAD_PART_MB, streamed straight into `dest`.
+    """HTTP download streamed straight into `dest`, over adaptive parallel connections.
 
-    Each part is a Range request written at its offset in the final file (no separate part files
-    and no join step, so disk use never doubles). Every FLUSH_BYTES the data is flushed to disk and
-    dropped from the page cache, which keeps the memory charged to the container flat (~16 MB of
-    cache) even for multi-gigabyte files.
+    Servers with byte ranges and a known size go through `segmented.SegmentedDownload`: up to
+    DOWNLOAD_CONNECTIONS connections, each writing its own range at its offset in the final file,
+    with request sizes that adapt to the speed and resume from `<dest>.segments.json`. Others are
+    streamed over one connection (`_download_stream`), resuming from the size of `dest`.
+    Written data is pushed to disk in the background and dropped from the page cache, which keeps
+    the memory charged to the container flat even for multi-gigabyte files.
 
-    Failures are retried DOWNLOAD_RETRIES times per part, resuming from the last byte written, so
-    nothing already downloaded is fetched again. `timeout` (default DOWNLOAD_TIMEOUT) is a stall
-    timeout: an attempt fails when no data arrives for that long, however long the part takes.
-    An existing `dest` (left by an earlier attempt of the same download) is resumed the same way.
-    Servers without Range support are streamed in one response and restarted on failure.
+    Failures are retried DOWNLOAD_RETRIES times per request, resuming from the last byte written,
+    so nothing already downloaded is fetched again. `timeout` (default DOWNLOAD_TIMEOUT) is a
+    stall timeout: an attempt fails when no data arrives for that long, however long it takes.
 
-    progress(done, total, part=, parts=, part_done=, part_size=) is called per 1 MB chunk; the part
-    details are omitted while the total size is unknown. Before each retry it is called with
+    progress(done, total, connections=) is called from this thread only (at most every 0.5 s on
+    the parallel path); `total` is None while unknown. Before each retry it is called with
     retry=, retries=, reason=, wait=, kept= instead."""
+    from app.platforms.segmented import NotSegmentable, SegmentedDownload
+
     headers = {"User-Agent": BROWSER_UA}
     if referer:
         headers["Referer"] = referer
     s = get_settings()
     timeout = s.download_timeout if timeout is None else timeout
     limit = s.max_file_bytes if max_bytes is None else max_bytes
-    part, retries = s.download_part_bytes, s.download_retries
     report = progress or (lambda *a, **k: None)
 
-    def on_bytes(done, total):
-        report(done, total, **part_detail(done, total, part))
+    def on_retry(error, attempt, retries, wait, kept):
+        report(kept, None, retry=attempt, retries=retries, reason=describe(error), wait=wait, kept=kept)
 
+    def opener(url, headers, timeout):
+        return open_url(urllib.request.Request(url, headers=headers), timeout=timeout)
+
+    try:
+        SegmentedDownload(
+            url,
+            dest,
+            opener,
+            headers=headers,
+            timeout=timeout,
+            limit=limit,
+            retries=s.download_retries,
+            max_conns=s.download_connections,
+            min_split=s.download_min_split_bytes,
+            chunk_cap=s.download_chunk_max_bytes,
+            progress=report,
+            on_retry=on_retry,
+        ).run()
+    except NotSegmentable:
+        _download_stream(
+            url, dest, headers, timeout, limit, s.download_retries, s.download_chunk_max_bytes, report
+        )
+    return dest
+
+
+def _download_stream(url, dest: Path, headers, timeout, limit, retries, part, report) -> None:
+    """One connection: servers without byte ranges, or without a known size."""
     start = dest.stat().st_size if dest.exists() else 0
     writeback = Writeback()
     with open(dest, "r+b" if start else "wb") as f:
@@ -165,7 +204,7 @@ def download_file(
             for attempt in range(retries + 1):
                 try:
                     done, total, ranged = _fetch(
-                        url, headers, timeout, f, done, end, total, limit, on_bytes, writeback
+                        url, headers, timeout, f, done, end, total, limit, report, writeback
                     )
                     break
                 except Exception as error:
@@ -173,17 +212,17 @@ def download_file(
                         raise
                     f.flush()
                     done = f.tell() if ranged else 0  # bytes on disk are kept for the next attempt
+                    wait = retry_delay(attempt + 1)
                     report(
                         done,
                         total,
                         retry=attempt + 1,
                         retries=retries,
                         reason=describe(error),
-                        wait=retry_delay(attempt + 1),
+                        wait=wait,
                         kept=done,
-                        **part_detail(done, total, part),
                     )
-                    _sleep(retry_delay(attempt + 1))
+                    _sleep(wait)
             f.flush()
             writeback.step(f.fileno(), done)
             if not ranged or total is None or done >= total:
@@ -192,7 +231,6 @@ def download_file(
         release_page_cache(f)  # once per file: everything on disk, nothing left in the cache
         if total is not None and done != total:
             raise ConnectionError(f"Incomplete download: {done} of {total} bytes")
-    return dest
 
 
 def _fetch(
@@ -259,21 +297,6 @@ def _copy(r, f, done: int, total, limit: int, progress, url: str, writeback: Wri
     return done
 
 
-def part_detail(done: int, total: int | None, part_bytes: int) -> dict:
-    """Which DOWNLOAD_PART_MB part `done` falls in, for progress reports of files with a known size."""
-    if not total or total <= 0 or part_bytes <= 0:
-        return {}
-    parts = max(1, -(-total // part_bytes))
-    part = min(done // part_bytes + 1, parts)
-    start = (part - 1) * part_bytes
-    return {
-        "part": part,
-        "parts": parts,
-        "part_done": max(0, min(done, total) - start),
-        "part_size": min(part_bytes, total - start),
-    }
-
-
 # sync_file_range(2) flags
 _WAIT_BEFORE, _WRITE, _WAIT_AFTER = 1, 2, 4
 try:
@@ -290,11 +313,12 @@ class Writeback:
     the previous window, which the kernel has written meanwhile, from the page cache. At most
     two windows (~2 x FLUSH_BYTES) are cached at any time, and the writer never waits for a
     synchronous flush (fdatasync every 16 MB used to stall downloads and merges on slow disks).
+    `start` is where the written region begins: each parallel connection keeps its own windows.
     """
 
-    def __init__(self) -> None:
-        self.dropped = 0  # bytes [0, dropped) are written and evicted
-        self.started = 0  # bytes [dropped, started) are being written in the background
+    def __init__(self, start: int = 0) -> None:
+        self.dropped = start  # bytes [start, dropped) are written and evicted
+        self.started = start  # bytes [dropped, started) are being written in the background
 
     def step(self, fd: int, upto: int) -> None:
         if upto <= self.started:

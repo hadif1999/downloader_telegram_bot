@@ -8,8 +8,9 @@ message on its own schedule, so a slow Telegram edit never stalls the download.
 Detail keys platforms may send (all optional):
     stage      "download" (default), "merge", "convert" or "finalize"
     track      "video" or "audio" while yt-dlp fetches the separate streams of one format
-    part/parts current byte-range part (1-based) and the number of parts
-    part_done/part_size  bytes of the current part received / its size
+    part/parts current HLS/DASH segment (1-based) and the number of segments
+    part_done/part_size  bytes of the current part received / its size (optional)
+    connections  parallel connections of a segmented HTTP download
     retry/retries/reason/wait/kept  sent instead of bytes when an attempt failed and is retried
 """
 
@@ -95,7 +96,9 @@ class Monitor:
         if "retry" in detail:
             with self._lock:
                 self.done = max(0, done)
-                self.detail = {k: v for k, v in detail.items() if k.startswith("part")}
+                self.detail = {
+                    k: v for k, v in detail.items() if k.startswith("part") or k in ("connections", "track")
+                }
                 self._retrying("part", detail)
             return
         with self._lock:
@@ -303,6 +306,9 @@ class Monitor:
     def _part_line(self) -> str | None:
         part, parts = self.detail.get("part"), self.detail.get("parts")
         if not part or not parts or parts < 2:
+            connections = self.detail.get("connections") or 0
+            if connections > 1:
+                return t("🔗 {n} parallel connections", n=connections)
             return None
         line = t("🧩 Part <b>{part}</b> of {parts}", part=part, parts=parts)
         size, got = self.detail.get("part_size"), self.detail.get("part_done")

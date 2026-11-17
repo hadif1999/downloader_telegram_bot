@@ -33,7 +33,6 @@ from app.platforms.common import (
     fetch,
     network_error,
     og_tags,
-    part_detail,
     release_page_cache,
     retry_delay,
     url_key,
@@ -260,10 +259,11 @@ def to_date(info: dict) -> str | None:
 class Progress:
     """Merges yt-dlp per-file progress (video + audio streams) into one counter.
 
-    Reports which stream is downloading, which DOWNLOAD_PART_MB part (or HLS/DASH segment) of it,
-    and the merge / MP3 conversion steps that follow (as `postprocessor_hooks`).
-    Also flushes each file being written and drops it from the page cache every FLUSH_BYTES, so
-    a multi-gigabyte download doesn't fill the container's memory with dirty pages."""
+    Reports which stream is downloading, over how many connections (segmented HTTP downloads) or
+    which HLS/DASH segment, and the merge / MP3 conversion steps that follow (as
+    `postprocessor_hooks`). Also flushes each file yt-dlp writes itself and drops it from the
+    page cache every FLUSH_BYTES, so a multi-gigabyte download doesn't fill the container's
+    memory with dirty pages (the segmented downloader manages its own writeback)."""
 
     # yt-dlp postprocessor keys (class name without "FFmpeg"/"PP") -> progress stage
     POSTPROCESSORS = {
@@ -273,12 +273,10 @@ class Progress:
         "EmbedThumbnail": "finalize",
     }
 
-    def __init__(
-        self, cb: ProgressCb, expected: int | None, flush_bytes: int = FLUSH_BYTES, part_bytes: int = 0
-    ):
+    def __init__(self, cb: ProgressCb, expected: int | None, flush_bytes: int = FLUSH_BYTES):
         self.cb, self.expected, self.done, self._seen = cb, expected, 0, set()
         self.position = 0  # bytes reported so far, across streams
-        self.flush_bytes, self.part_bytes = flush_bytes, part_bytes
+        self.flush_bytes = flush_bytes
         self._writeback: dict[str, Writeback] = {}
         self._flushed: dict[str, int] = {}
 
@@ -293,6 +291,8 @@ class Progress:
                 self.done + cur, max(grand, self.done + cur) if grand else None, **self._detail(d, cur, total)
             )
             writing = d.get("tmpfilename") or name
+            if d.get("segmented"):
+                return  # written at many offsets at once; the segmented downloader flushes it
             if writing and cur - self._flushed.get(writing, 0) >= self.flush_bytes:
                 self._writeback.setdefault(writing, Writeback()).step_path(writing, cur)
                 self._flushed[writing] = cur
@@ -313,8 +313,8 @@ class Progress:
         if d.get("fragment_count"):  # HLS/DASH: the source's own segments are the parts
             detail |= {"part": (d.get("fragment_index") or 0) + 1, "parts": d["fragment_count"]}
             detail["part"] = min(detail["part"], detail["parts"])
-        elif self.part_bytes:
-            detail |= part_detail(cur, total, self.part_bytes)
+        elif d.get("connections"):
+            detail["connections"] = d["connections"]
         return detail
 
     def retried(self, error, count: int, retries: int) -> None:
@@ -530,7 +530,7 @@ class YtDlpPlatform:
         if fo is None:
             raise UserError("This format is no longer available. Please send the link again.")
         audio = fmt == "mp3"
-        tracker = Progress(progress, fo.size if fo else None, part_bytes=get_settings().download_part_bytes)
+        tracker = Progress(progress, fo.size if fo else None)
         opts: dict[str, Any] = {
             **self.ydl_opts(),
             "outtmpl": str(dest / "media.%(ext)s"),
@@ -545,10 +545,15 @@ class YtDlpPlatform:
             "continuedl": True,  # a re-run of the download resumes partial and finished streams
             "postprocessor_hooks": [tracker.postprocessed],
             "max_filesize": get_settings().max_source_bytes if audio else get_settings().max_file_bytes,
-            # Fetch HTTP formats in small byte ranges. YouTube serves ~1 MB of a large range and then
-            # nearly stalls (measured on the VPS: 200 MB ranges 0.04 MB/s, 10 MB ranges 21-23 MB/s).
-            # Each range streams to disk, so memory is independent of the size.
+            # HTTP formats with a known size use the adaptive segmented downloader (parallel
+            # connections, request sizes that follow the speed; see downloader.SegmentedHttpFD).
+            "segmented_http": get_settings().download_connections,
+            # Others (unknown size, no ranges) keep yt-dlp's own downloader in small byte ranges:
+            # YouTube serves ~1 MB of a large range and then nearly stalls (measured on the VPS:
+            # 200 MB ranges 0.04 MB/s, 10 MB ranges 21-23 MB/s).
             "http_chunk_size": YTDLP_CHUNK_BYTES,
+            # HLS/DASH: fetch that many fragments at once.
+            "concurrent_fragment_downloads": get_settings().download_connections,
         }
         if audio:
             opts |= {

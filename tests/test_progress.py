@@ -121,27 +121,30 @@ def test_clock(seconds, text):
 # --------------------------------------------------------------- yt-dlp hooks
 
 
-def test_ytdlp_progress_reports_track_and_part_of_each_stream():
+def test_ytdlp_progress_reports_track_and_connections_of_each_stream():
     events = []
-    tracker = ytdlp.Progress(lambda *a, **d: events.append((a, d)), 600, part_bytes=200)
+    tracker = ytdlp.Progress(lambda *a, **d: events.append((a, d)), 600)
     video = {"vcodec": "avc1", "acodec": "none"}
-    tracker({"status": "downloading", "downloaded_bytes": 250, "total_bytes": 500, "info_dict": video})
+    tracker(
+        {
+            "status": "downloading",
+            "downloaded_bytes": 250,
+            "total_bytes": 500,
+            "info_dict": video,
+            "segmented": True,
+            "connections": 3,
+        }
+    )
     tracker({"status": "finished", "filename": "v.mp4", "downloaded_bytes": 500})
     audio = {"vcodec": "none", "acodec": "mp4a"}
     tracker({"status": "downloading", "downloaded_bytes": 40, "total_bytes": 100, "info_dict": audio})
-    assert events[0] == (
-        (250, 600),
-        {"track": "video", "part": 2, "parts": 3, "part_done": 50, "part_size": 200},
-    )
-    assert events[1] == (
-        (540, 600),
-        {"track": "audio", "part": 1, "parts": 1, "part_done": 40, "part_size": 100},
-    )
+    assert events[0] == ((250, 600), {"track": "video", "connections": 3})
+    assert events[1] == ((540, 600), {"track": "audio"})
 
 
 def test_ytdlp_progress_uses_hls_segments_as_parts():
     events = []
-    tracker = ytdlp.Progress(lambda *a, **d: events.append(d), None, part_bytes=200)
+    tracker = ytdlp.Progress(lambda *a, **d: events.append(d), None)
     tracker({"status": "downloading", "downloaded_bytes": 5, "fragment_index": 11, "fragment_count": 340})
     assert events == [{"part": 12, "parts": 340}]
 

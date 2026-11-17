@@ -59,6 +59,7 @@ TEXTS: dict[str, str] = {
     "🗂 <b>{done}</b> / {total} files": "🗂 <b>{done}</b> از {total} فایل",
     "📥 Fetching file {n} of {total}": "📥 در حال دریافت فایل {n} از {total}",
     "🧩 Part <b>{part}</b> of {parts}": "🧩 بخش <b>{part}</b> از {parts}",
+    "🔗 {n} parallel connections": "🔗 {n} اتصال هم‌زمان",
     "🚀 measuring speed…": "🚀 در حال محاسبه‌ی سرعت…",
     "⏳ {time} left": "⏳ {time} مانده",
     "⏱ Elapsed {time}": "⏱ زمان سپری‌شده: {time}",

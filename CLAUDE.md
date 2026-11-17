@@ -29,7 +29,9 @@ retries, cancel, disk retention: the invariants the tests protect), `docs/DEPLOY
 | Progress card rendering (thread-safe Monitor) | `app/services/progress.py` |
 | Request state machine in Redis (Lua), cancel flags | `app/services/requests.py` |
 | Disk retention (last 3 media, free-space guard) | `app/services/storage.py` |
-| HTTP Range parts, resume, stall timeout, background writeback | `app/platforms/common.py` |
+| Segmented downloads: parallel connections, work stealing, adaptive request size, resume table | `app/platforms/segmented.py` |
+| `download_file`, single-stream fallback, stall timeout, background writeback | `app/platforms/common.py` |
+| yt-dlp hook: `SegmentedHttpFD` for HTTP formats, retry hook, guarded transport | `app/platforms/downloader.py` |
 | Stream cache (worker reuses the bot's extraction, 2 h) | `app/platforms/ytdlp.py` (`save_streams`) |
 | yt-dlp options, progress/retry hooks, `retryable()` | `app/platforms/ytdlp.py`, `downloader.py` |
 | Lazy aiogram pydantic models (memory) | `app/lean_models.py` |
@@ -43,7 +45,9 @@ retries, cancel, disk retention: the invariants the tests protect), `docs/DEPLOY
   current language; don't copy them into module-level variables.
 - **Progress callbacks** are `progress(done, total, **detail)`; detail keys are documented at the
   top of `app/services/progress.py`. Raising `Cancelled` from them aborts yt-dlp cleanly.
-- **Speed**: keep yt-dlp's `http_chunk_size` small (10 MB): YouTube stalls large ranges.
+- **Speed**: YouTube stalls large ranges, so requests to `googlevideo.com` stay at 10 MB or less
+  (`segmented.CHUNK_CAPS`, and yt-dlp's `http_chunk_size` for its own downloader). Parallel
+  connections per file: `DOWNLOAD_CONNECTIONS` (1 turns them off).
 - **Memory** is the production constraint (1.5 GB slice for the whole stack: bot 512 MB, worker 1 GB). Don't add eager
   imports of heavy modules to the bot, keep downloads streaming to disk, keep deno's heap cap.
 - **Never** retry or resend after Telegram may have accepted an upload (see RELIABILITY.md).

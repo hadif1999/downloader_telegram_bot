@@ -115,17 +115,39 @@ right before upload; once the journal reaches `sending`, cancellation is refused
 Only the user stored on the request may cancel it.
 
 Retries and timeouts (`DOWNLOAD_RETRIES`=3, `DOWNLOAD_TIMEOUT`=90 s) work at two levels. Within a
-download, `download_file` retries each byte-range part (or a single-response file) with 2/4/8 s
-back-off, asking only for the bytes after the last one written; yt-dlp gets the same counts as
-`retries`/`fragment_retries`, the timeout as `socket_timeout`, and resumes its `.part` file. The
-timeout is a stall timeout (no data for that long), not a deadline: a 200 MB part at YouTube's
-throttled ~0.4 MB/s takes minutes and must not fail for being slow. yt-dlp has no retry hook, so
+download, every ranged request of the segmented downloader (`app/platforms/segmented.py`, used by
+`download_file` and, through `SegmentedHttpFD`, by yt-dlp for HTTP formats of known size) is
+retried with 2/4/8 s back-off and a halved request size, asking only for the bytes after the last
+one written to that range; other connections keep running meanwhile. yt-dlp's own downloaders
+(HLS/DASH fragments, unknown sizes) get the same counts as `retries`/`fragment_retries`, the
+timeout as `socket_timeout`, and resume their `.part` file. The timeout is a stall timeout (no data
+for that long), not a deadline: a large range at YouTube's throttled ~0.4 MB/s takes minutes and
+must not fail for being slow.
+
+Segmented downloads keep these invariants:
+- **No double download**: each byte range has one owner; a connection that steals half of another
+  range only takes bytes not yet written, and writes are bounded by the range end under a lock.
+- **Resume**: the segment table (`<file>.segments.json`: total size and each range's start, end
+  and written offset) is saved before the file is preallocated, every 2 s and on any failure, and
+  removed on completion. A sized file without a valid table is never trusted; a table whose total
+  no longer matches the server starts over. A partial file left by a single-stream download is
+  resumed from its size. If the server stops supporting ranges, the file is cut back to its
+  contiguous prefix for the single-stream downloader.
+- **Changed files**: requests after the first carry `If-Range` with the first reply's strong
+  ETag or Last-Modified; a full reply (200) or a different total is reported as a changed file.
+- **Refused connections**: an *extra* connection refused with 403/429/503 before receiving data
+  lowers the connection limit and gives its range back; the download's own connection treats the
+  same statuses as ordinary errors (a YouTube 403 still triggers a re-run with fresh URLs).
+- **Cancel and errors**: progress is reported from the calling thread only; an exception there
+  (`Cancelled`) or in any connection stops all of them, saves the table and is re-raised.
+- **Memory**: each connection holds one 1 MB read buffer and its own writeback windows of
+  `FLUSH_BYTES / connections`, so cached dirty data per download stays ~2 x 16 MB. yt-dlp has no retry hook, so
 `FileDownloader.report_retry` is wrapped to forward retries to the card (`retry_hook` option).
 If the download still fails with a retryable error (`ytdlp.retryable`: timeouts, dropped
 connections, 408/425/429/5xx, YouTube's expired-URL 403s), the worker re-runs it in the same
-attempt directory, so finished parts and streams are reused; user-facing errors, size limits,
+attempt directory, so finished ranges and streams are reused; user-facing errors, size limits,
 cancellation and other deterministic failures are not retried. Permanent HTTP errors (404, 410...)
-are not retried at the part level. Only a server that ignores Range restarts from byte 0.
+are not retried at the request level. Only a server that ignores Range restarts from byte 0.
 
 ## Regression coverage for the 20 audit findings
 
