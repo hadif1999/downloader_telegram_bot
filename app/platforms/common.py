@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import ctypes
 import hashlib
 import html
 import http.client
@@ -154,6 +156,7 @@ def download_file(
         report(done, total, **part_detail(done, total, part))
 
     start = dest.stat().st_size if dest.exists() else 0
+    writeback = Writeback()
     with open(dest, "r+b" if start else "wb") as f:
         f.seek(start)
         done, total, ranged = start, None, True
@@ -161,7 +164,9 @@ def download_file(
             end = done + part - 1 if total is None else min(done + part, total) - 1
             for attempt in range(retries + 1):
                 try:
-                    done, total, ranged = _fetch(url, headers, timeout, f, done, end, total, limit, on_bytes)
+                    done, total, ranged = _fetch(
+                        url, headers, timeout, f, done, end, total, limit, on_bytes, writeback
+                    )
                     break
                 except Exception as error:
                     if attempt == retries or not network_error(error):
@@ -179,16 +184,20 @@ def download_file(
                         **part_detail(done, total, part),
                     )
                     _sleep(retry_delay(attempt + 1))
-            release_page_cache(f)
+            f.flush()
+            writeback.step(f.fileno(), done)
             if not ranged or total is None or done >= total:
                 break
         f.truncate(done)  # a resumed file may hold stale bytes past the end
+        release_page_cache(f)  # once per file: everything on disk, nothing left in the cache
         if total is not None and done != total:
             raise ConnectionError(f"Incomplete download: {done} of {total} bytes")
     return dest
 
 
-def _fetch(url, headers, timeout, f, start, end, total, limit, progress) -> tuple[int, int | None, bool]:
+def _fetch(
+    url, headers, timeout, f, start, end, total, limit, progress, writeback=None
+) -> tuple[int, int | None, bool]:
     """Fetch bytes start..end into `f`. Returns (bytes on disk, total size or None, ranged)."""
     req = urllib.request.Request(url, headers={**headers, "Range": f"bytes={start}-{end}"})
     try:
@@ -212,7 +221,7 @@ def _fetch(url, headers, timeout, f, start, end, total, limit, progress) -> tupl
                 raise TooLargeError(url)
             expected = int(match.group(2)) + 1
             f.seek(start)
-            done = _copy(r, f, start, size, limit, progress, url)
+            done = _copy(r, f, start, size, limit, progress, url, writeback)
             if done != expected:
                 raise ShortPart(f"Short part: {done - start} of {expected - start} bytes")
             return done, size, size is not None
@@ -224,13 +233,13 @@ def _fetch(url, headers, timeout, f, start, end, total, limit, progress) -> tupl
             raise TooLargeError(url)
         f.seek(0)
         f.truncate()
-        done = _copy(r, f, 0, size, limit, progress, url)
+        done = _copy(r, f, 0, size, limit, progress, url, writeback)
         if size is not None and done != size:
             raise ShortPart(f"Short download: {done} of {size} bytes")
         return done, size if size is not None else done, False
 
 
-def _copy(r, f, done: int, total, limit: int, progress, url: str) -> int:
+def _copy(r, f, done: int, total, limit: int, progress, url: str, writeback: Writeback | None = None) -> int:
     since_flush = 0
     while chunk := r.read(CHUNK):
         f.write(chunk)
@@ -241,7 +250,11 @@ def _copy(r, f, done: int, total, limit: int, progress, url: str) -> int:
             progress(done, total)
         since_flush += len(chunk)
         if since_flush >= FLUSH_BYTES:
-            release_page_cache(f)
+            f.flush()
+            if writeback is not None:
+                writeback.step(f.fileno(), done)
+            else:
+                release_page_cache(f)
             since_flush = 0
     return done
 
@@ -259,6 +272,54 @@ def part_detail(done: int, total: int | None, part_bytes: int) -> dict:
         "part_done": max(0, min(done, total) - start),
         "part_size": min(part_bytes, total - start),
     }
+
+
+# sync_file_range(2) flags
+_WAIT_BEFORE, _WRITE, _WAIT_AFTER = 1, 2, 4
+try:
+    _sync_file_range = ctypes.CDLL(None, use_errno=True).sync_file_range
+    _sync_file_range.argtypes = [ctypes.c_int, ctypes.c_int64, ctypes.c_int64, ctypes.c_uint]
+except (OSError, AttributeError):  # not Linux
+    _sync_file_range = None
+
+
+class Writeback:
+    """Keep a growing file's page cache bounded without stalling the writer.
+
+    Each step starts *background* writeback of the bytes written since the last step and drops
+    the previous window, which the kernel has written meanwhile, from the page cache. At most
+    two windows (~2 x FLUSH_BYTES) are cached at any time, and the writer never waits for a
+    synchronous flush (fdatasync every 16 MB used to stall downloads and merges on slow disks).
+    """
+
+    def __init__(self) -> None:
+        self.dropped = 0  # bytes [0, dropped) are written and evicted
+        self.started = 0  # bytes [dropped, started) are being written in the background
+
+    def step(self, fd: int, upto: int) -> None:
+        if upto <= self.started:
+            return
+        if _sync_file_range is None or not hasattr(os, "posix_fadvise"):
+            self.started = upto
+            return
+        if self.started > self.dropped:
+            span = self.started - self.dropped
+            _sync_file_range(fd, self.dropped, span, _WAIT_BEFORE | _WRITE | _WAIT_AFTER)
+            with contextlib.suppress(OSError):
+                os.posix_fadvise(fd, self.dropped, span, os.POSIX_FADV_DONTNEED)
+            self.dropped = self.started
+        _sync_file_range(fd, self.started, upto - self.started, _WRITE)
+        self.started = upto
+
+    def step_path(self, path, upto: int) -> None:
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            self.step(fd, upto)
+        finally:
+            os.close(fd)
 
 
 def release_page_cache(target) -> None:

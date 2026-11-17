@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import json
+import logging
 import re
 import subprocess
+import zlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +26,7 @@ from app.platforms.common import (
     CRAWLER_UA,
     FLUSH_BYTES,
     TooLargeError,
+    Writeback,
     cookie_file,
     describe,
     download_file,
@@ -36,6 +41,8 @@ from app.platforms.common import (
 from app.platforms.downloader import YoutubeDL
 from app.platforms.network import on_domains
 
+log = logging.getLogger(__name__)
+
 # Load yt-dlp plugins (bgutil PO-token provider) once, in the main thread: importing them lazily
 # from several worker threads at the same time races and breaks the plugin registry.
 load_all_plugins()
@@ -48,6 +55,62 @@ TooLarge = TooLargeError  # raised when a file exceeds MAX_FILE_MB
 
 class UserError(Exception):
     """Error whose message is safe and useful to show to the user."""
+
+
+# --- cached stream data
+# The bot's lookup already has every format URL. The worker reuses it instead of extracting the
+# link again (~2 s per download). Kept as long as the format card (INFO_CACHE_TTL), but never
+# beyond STREAMS_TTL_MAX: YouTube's media URLs expire after ~6 h.
+STREAMS_TTL_MAX = 4 * 3600
+# Unused by downloads and most of the size (YouTube: 774 KB -> ~20 KB compressed without them).
+STREAMS_DROP = (
+    "automatic_captions",
+    "subtitles",
+    "heatmap",
+    "requested_formats",
+    "requested_downloads",
+    "requested_subtitles",
+)
+
+
+def _streams_key(platform: str, media_id: str) -> str:
+    from app.services.cache import namespace
+
+    return f"streams:{namespace()}:{platform}:{media_id}"
+
+
+def save_streams(platform: str, media_id: str, info: dict) -> None:
+    """Remember an extraction result for the download. Best effort: a miss only costs a lookup."""
+    try:
+        from app.services.cache import client
+
+        slim = {k: v for k, v in YoutubeDL.sanitize_info(info).items() if k not in STREAMS_DROP}
+        slim["formats"] = [f for f in slim.get("formats") or [] if f.get("protocol") != "mhtml"]
+        blob = base64.b64encode(zlib.compress(json.dumps(slim).encode(), 6)).decode()
+        ttl = min(get_settings().info_cache_ttl, STREAMS_TTL_MAX)
+        client().set(_streams_key(platform, media_id), blob, ex=ttl)
+    except Exception:
+        log.warning("couldn't cache stream data: platform=%s media=%s", platform, media_id)
+
+
+def load_streams(platform: str, media_id: str) -> dict | None:
+    try:
+        from app.services.cache import client
+
+        blob = client().get(_streams_key(platform, media_id))
+        return json.loads(zlib.decompress(base64.b64decode(blob))) if blob else None
+    except Exception:
+        log.warning("couldn't read cached stream data: platform=%s media=%s", platform, media_id)
+        return None
+
+
+def drop_streams(platform: str, media_id: str) -> None:
+    try:
+        from app.services.cache import client
+
+        client().delete(_streams_key(platform, media_id))
+    except Exception:
+        pass
 
 
 # yt-dlp byte-range size for HTTP formats (see the comment where it is used).
@@ -216,7 +279,8 @@ class Progress:
         self.cb, self.expected, self.done, self._seen = cb, expected, 0, set()
         self.position = 0  # bytes reported so far, across streams
         self.flush_bytes, self.part_bytes = flush_bytes, part_bytes
-        self._released: dict[str, int] = {}
+        self._writeback: dict[str, Writeback] = {}
+        self._flushed: dict[str, int] = {}
 
     def __call__(self, d: dict) -> None:
         name = d.get("filename") or d.get("tmpfilename")
@@ -229,9 +293,9 @@ class Progress:
                 self.done + cur, max(grand, self.done + cur) if grand else None, **self._detail(d, cur, total)
             )
             writing = d.get("tmpfilename") or name
-            if writing and cur - self._released.get(writing, 0) >= self.flush_bytes:
-                release_page_cache(writing)
-                self._released[writing] = cur
+            if writing and cur - self._flushed.get(writing, 0) >= self.flush_bytes:
+                self._writeback.setdefault(writing, Writeback()).step_path(writing, cur)
+                self._flushed[writing] = cur
         elif d["status"] == "finished" and name not in self._seen:
             self._seen.add(name)
             self.done += d.get("downloaded_bytes") or d.get("total_bytes") or 0
@@ -334,6 +398,8 @@ class YtDlpPlatform:
                     raise UserError("Couldn't read every item in this post. Please try again later.")
                 info = {**info, **entries[0]} if entries else info
             if info.get("formats") or info.get("url"):
+                if info.get("formats"):
+                    save_streams(self.name, media_id, info)
                 return self.to_media_info(info, url, media_id)
         except DownloadError as e:
             error = e
@@ -503,8 +569,18 @@ class YtDlpPlatform:
                     "allow_multiple_audio_streams": True,
                     "postprocessor_args": {"merger+ffmpeg_o": ["-map", "-0:a?"]},
                 }
+        cached = load_streams(info.platform, info.id) if source == info.url else None
         with YoutubeDL(opts) as ydl:
-            r = ydl.extract_info(source, download=True) or {}
+            r = None
+            if cached:
+                try:
+                    r = ydl.process_ie_result(cached, download=True) or {}
+                except DownloadError:
+                    # Expired or rejected URLs: extract again. Partial files are resumed.
+                    log.info("cached stream data failed, extracting again: media=%s", info.id)
+                    drop_streams(info.platform, info.id)
+            if r is None:
+                r = ydl.extract_info(source, download=True) or {}
         if r.get("_type") == "playlist":
             r = next((e for e in r.get("entries") or [] if e), r)
         if not r.get("requested_downloads"):  # skipped by max_filesize

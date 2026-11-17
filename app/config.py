@@ -124,7 +124,7 @@ class Settings(BaseSettings):
     # every lookup is ~4.5 s faster. Enable on a larger host if YouTube starts hiding formats.
     youtube_js_runtimes: Annotated[list[str], NoDecode] = []
     # Metadata lookups (link -> format menu) running at once in the bot; the rest wait their turn.
-    extract_slots: int = Field(default=2, ge=1, le=16)
+    extract_slots: int = Field(default=4, ge=1, le=16)
     # Retries per part (and per whole download); each retry resumes from the bytes already on disk.
     download_retries: int = Field(default=3, ge=0, le=10)
     # Stall timeout in seconds: an attempt fails when no data arrives for this long.
@@ -141,7 +141,9 @@ class Settings(BaseSettings):
     # bgutil PO-token provider sidecar (empty disables)
     pot_provider_url: str = "http://bgutil-provider:4416"
 
-    info_cache_ttl: int = 60 * 60
+    # How long a looked-up link is remembered: the format card (repeat links answer instantly) and
+    # its stream URLs (the worker skips a second lookup; capped at 4 h, YouTube URLs expire at ~6 h).
+    info_cache_ttl: int = Field(default=2 * 3600, ge=60, le=7 * 24 * 3600)
 
     @property
     def max_file_bytes(self) -> int:

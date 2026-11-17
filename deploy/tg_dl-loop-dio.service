@@ -1,0 +1,18 @@
+# Direct I/O for the loop device behind /opt/tg_dl/data.
+# Without it every byte the bot writes is cached twice (the ext4 inside the image and the image
+# file on the host), both charged to tg_dl.slice: merges slowed to 17-21 s under memory.high
+# throttling; with direct I/O the same 126 MB merge takes ~3 s.
+# Install: cp deploy/tg_dl-loop-dio.service /etc/systemd/system/ && systemctl daemon-reload
+#          && systemctl enable --now tg_dl-loop-dio.service
+[Unit]
+Description=Direct I/O for the tg_dl data loop device
+After=opt-tg_dl-data.mount
+BindsTo=opt-tg_dl-data.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'losetup --direct-io=on "$(findmnt -no SOURCE /opt/tg_dl/data)"'
+
+[Install]
+WantedBy=opt-tg_dl-data.mount

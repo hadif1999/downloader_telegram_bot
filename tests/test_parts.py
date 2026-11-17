@@ -77,12 +77,10 @@ def parts(monkeypatch):
     monkeypatch.setattr(common, "CHUNK", 500)  # smaller reads than a part, as with real files
     monkeypatch.setattr(common, "FLUSH_BYTES", 400)  # flush more often than a part, as in production
     released = []
-    real = common.release_page_cache
-    # Record how far the file was written each time its page cache was released.
+    step = common.Writeback.step
+    # Record how far the file was written each time background writeback was started.
     monkeypatch.setattr(
-        common,
-        "release_page_cache",
-        lambda f: (released.append(f.tell() if hasattr(f, "tell") else f), real(f)),
+        common.Writeback, "step", lambda self, fd, upto: (released.append(upto), step(self, fd, upto))
     )
 
     def serve(server):
@@ -253,6 +251,7 @@ def test_release_page_cache_keeps_file_contents(tmp_path):
 def test_ytdlp_progress_releases_page_cache_every_part(monkeypatch):
     released = []
     monkeypatch.setattr(ytdlp, "release_page_cache", released.append)
+    monkeypatch.setattr(ytdlp.Writeback, "step_path", lambda self, path, upto: released.append(path))
     progress = ytdlp.Progress(lambda *a, **k: None, None, flush_bytes=100)
     for done in (50, 99, 100, 150, 210):
         progress(
@@ -292,3 +291,19 @@ def test_ytdlp_downloads_in_http_range_chunks(monkeypatch, tmp_path):
     assert captured["retries"] == captured["fragment_retries"] == 3
     assert captured["socket_timeout"] == 90 and captured["continuedl"] is True
     assert callable(captured["retry_hook"]) and captured["retry_sleep_functions"]["http"](0) == 2
+
+
+def test_writeback_keeps_at_most_two_windows_cached(tmp_path):
+    path = tmp_path / "w.bin"
+    wb = common.Writeback()
+    with open(path, "wb") as f:
+        for upto in (100, 250, 400):
+            f.write(PAYLOAD[upto - (100 if upto == 100 else 150) : upto])
+            f.flush()
+            wb.step(f.fileno(), upto)
+            # Everything below the previous step is on disk and evicted; the newest window is
+            # being written in the background. The writer never waited for a full flush.
+            assert wb.started == upto and wb.dropped == {100: 0, 250: 100, 400: 250}[upto]
+        wb.step(f.fileno(), 300)  # rewinds (retries) never move the windows back
+        assert (wb.dropped, wb.started) == (250, 400)
+    assert path.read_bytes() == PAYLOAD[:400]
