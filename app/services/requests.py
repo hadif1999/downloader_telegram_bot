@@ -164,6 +164,25 @@ def transition(
         raise LeaseLost("Request ownership was lost.")
 
 
+def set_step(request_id: str, user_id: int, owner: str, step: str) -> None:
+    """Record how far an inline delivery got (`stored` -> `edited` / `pm_sending` -> `pm` / `start`),
+    so a replay never repeats a send that may already have reached Telegram."""
+    ok = client().eval(
+        """
+        if redis.call('GET', KEYS[2]) ~= ARGV[1] or redis.call('GET', KEYS[3]) ~= ARGV[2] then return 0 end
+        redis.call('HSET', KEYS[1], 'step', ARGV[3])
+        return 1
+    """,
+        3,
+        *keys(request_id, user_id),
+        owner,
+        request_id,
+        step,
+    )
+    if not ok:
+        raise LeaseLost("Request ownership was lost before recording the inline delivery step.")
+
+
 def release(request_id: str, user_id: int, owner: str) -> None:
     client().eval(
         """

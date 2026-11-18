@@ -90,6 +90,35 @@ def result_kb(platform: str, media_id: str) -> InlineKeyboardMarkup:
     )
 
 
+INLINE = "inl"
+
+
+def inline_start_kb(result_id: str) -> InlineKeyboardMarkup:
+    """On a chosen inline result's card. It also gives the card an inline_message_id, and it
+    starts the download if Telegram's chosen-result update never arrives."""
+    data = f"{INLINE}{SEP}{result_id}"
+    assert len(data.encode()) <= 64, data
+    return InlineKeyboardMarkup(inline_keyboard=[[Btn(text=t("▶️ Start download"), callback_data=data)]])
+
+
+def inline_again_kb(query: str | None, label: str | None = None) -> InlineKeyboardMarkup | None:
+    """Reopen the format list for the same link, in the same chat (inline cards can't use the
+    callback format menu: it needs the bot's own chat)."""
+    if not query:
+        return None
+    button = Btn(text=label or t("🔁 Choose again"), switch_inline_query_current_chat=query)
+    return InlineKeyboardMarkup(inline_keyboard=[[button]])
+
+
+def inline_result_kb(query: str | None, kind: str) -> InlineKeyboardMarkup | None:
+    """Under a video delivered inline: get its music through inline mode again."""
+    return inline_again_kb(query, t("🎵 Get the music (MP3)")) if kind == "video" else None
+
+
+def url_kb(text: str, url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[Btn(text=text, url=url)]])
+
+
 HELP = "help"
 
 

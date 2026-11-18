@@ -420,4 +420,46 @@ TEXTS: dict[str, str] = {
     "active in 7 days": "فعال در ۷ روز",
     "active in 24 hours": "فعال در ۲۴ ساعت",
     "✏️ Send the notice as text.": "✏️ پیام رو به‌صورت متن بفرست.",
+    # --- inline mode (@bot <link> in any chat)
+    "<b>✍️ In any chat, without adding me</b>": "<b>✍️ توی هر چتی، بدون اضافه کردن من</b>",
+    "1. In the message box, type @{bot} and a space, then paste the link.": (
+        "1. توی کادر پیام بنویس @{bot} و یک فاصله، بعد لینک رو بچسبون."
+    ),
+    "2. Pick a quality from the list that appears (⚡ means it is sent instantly).": (
+        "2. از فهرستی که باز می‌شه یک کیفیت رو انتخاب کن (⚡ یعنی فوری فرستاده می‌شه)."
+    ),
+    "3. The progress shows in the chat, then turns into the file.": (
+        "3. پیشرفت دانلود توی همون چت نشون داده می‌شه و بعد به فایل تبدیل می‌شه."
+    ),
+    "If that chat doesn't accept files, I send it to our private chat instead.": (
+        "اگه اون چت فایل قبول نکنه، فایل رو توی چت خصوصی خودمون برات می‌فرستم."
+    ),
+    "⏳ <b>Starting the download…</b>\nIf nothing happens in a few seconds, press Start.": (
+        "⏳ <b>در حال شروع دانلود…</b>\nاگه تا چند ثانیه اتفاقی نیفتاد، دکمه‌ی شروع رو بزن."
+    ),
+    "🚫 <b>Download cancelled</b>\nNothing was sent.": "🚫 <b>دانلود لغو شد</b>\nچیزی فرستاده نشد.",
+    "📬 <b>Sent to your private chat with the bot</b>\nThis chat didn't accept the file.": (
+        "📬 <b>توی چت خصوصی با ربات برات فرستادم</b>\nاین چت فایل رو قبول نکرد."
+    ),
+    "🔓 <b>Open the bot and press Start</b>\nThis chat didn't accept the file, and I can't message you before you start the bot. The file arrives right after.": (
+        "🔓 <b>ربات رو باز کن و Start رو بزن</b>\nاین چت فایل رو قبول نکرد و تا ربات رو استارت نکنی نمی‌تونم بهت پیام بدم. بلافاصله بعدش فایل می‌رسه."
+    ),
+    "This download has already started.": "این دانلود قبلاً شروع شده.",
+    "Only the person who sent this can start it.": "فقط کسی که این رو فرستاده می‌تونه شروعش کنه.",
+    "🚧 The bot is under maintenance. Please try again later.": "🚧 ربات در حال تعمیر و نگهداریه. لطفاً بعداً دوباره امتحان کن.",
+    "⏳ Still looking… add a space to refresh": "⏳ هنوز در حال بررسی… برای به‌روزرسانی یک فاصله اضافه کن",
+    "📖 Paste a link here to download it": "📖 لینک رو اینجا بچسبون تا دانلودش کنم",
+    "🔒 Join our channel to use the bot": "🔒 برای استفاده از ربات عضو کانال شو",
+    "📂 Open the playlist in the bot": "📂 باز کردن پلی‌لیست توی ربات",
+    "📂 Open the album in the bot": "📂 باز کردن آلبوم توی ربات",
+    "🌐 More audio languages in the bot": "🌐 زبان‌های صوتی بیشتر توی ربات",
+    "📂 More options in the bot": "📂 گزینه‌های بیشتر توی ربات",
+    "⚡ {label} · instant": "⚡ {label} · فوری",
+    "🖼 Photo": "🖼 عکس",
+    "🎬 Video": "🎬 ویدیو",
+    "🎵 Track": "🎵 آهنگ",
+    "▶️ Start download": "▶️ شروع دانلود",
+    "🔁 Choose again": "🔁 انتخاب دوباره",
+    "🎵 Get the music (MP3)": "🎵 دریافت موسیقی (MP3)",
+    "🤖 Open the bot": "🤖 باز کردن ربات",
 }

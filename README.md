@@ -80,6 +80,40 @@ They are downloaded and sent one by one. Confirm below ⤵️
   Telegram file cache. The card ends with a summary listing every item that failed and why.
 - Only the person who sent the links can press these buttons, which matters in groups.
 
+### Inline mode: any chat, without adding the bot
+
+Type `@bot ` and paste a link in the message box of **any** chat. The bot looks the link up and
+lists one result per format, each with the thumbnail, title, duration and size:
+
+```
+@ir_YT_downloader_bot https://youtu.be/…
+[thumb] ⚡ 🎬 720p · instant           ← downloaded before: sent at once
+[thumb] 🎬 1080p · 126.0MB
+[thumb] 🎵 MP3 · 4.9MB
+```
+
+Tapping a result confirms it. A card appears in the chat with the usual live progress and
+✖️ Cancel, then turns into the video, track or photo, with a "🎵 Get the music (MP3)" button that
+reopens the list for the same link. If that chat refuses the file (the card was deleted, media is
+not allowed there), it is sent to the user's private chat with the bot instead, and the card says
+so. Users who never pressed Start in the bot get an "Open the bot" link that delivers it there.
+
+- Playlists, albums with several items and other audio languages: a "📂 Open in the bot" button
+  above the results opens the normal flow in the private chat.
+- A slow site: the list shows "⏳ Still looking…"; the lookup goes on and the next keystroke
+  answers from the cache.
+- Bans, maintenance mode and the required channels apply here too (with a join button).
+
+Setup, once:
+1. In [@BotFather](https://t.me/BotFather): `/setinline` (placeholder, e.g. "paste a link…") and
+   `/setinlinefeedback` → Enabled. Without feedback the bot is never told which result was
+   chosen; the card's ▶️ Start download button is then the way to begin.
+2. Telegram only lets an inline message show a file that is already uploaded. Create a private
+   channel, add the bot as an admin allowed to post, and set `INLINE_STORAGE_CHAT_ID` (its
+   `-100…` ID or `@username`); every inline download is uploaded there first. Left empty, that
+   copy goes to the user's private chat with the bot, so only users who pressed Start can use it.
+   The bot checks the channel at startup and refuses to start if it can't post there.
+
 ## Platforms
 
 | Platform | How | Notes |

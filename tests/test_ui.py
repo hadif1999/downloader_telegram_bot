@@ -91,12 +91,15 @@ def test_help_command_and_button(monkeypatch):
     assert add_to_group_kb("bot").inline_keyboard[0][0].callback_data == HELP
     message = MagicMock(spec=Message)
     message.answer = AsyncMock()
-    asyncio.run(start.help_command(message))
+    bot = MagicMock()
+    bot.me = AsyncMock(return_value=MagicMock(username="test_bot"))
+    asyncio.run(start.help_command(message, bot))
     assert "How to use the bot" in message.answer.await_args.args[0]
+    assert "@test_bot" in message.answer.await_args.args[0]  # the inline-mode section
 
     ack = AsyncMock()
     monkeypatch.setattr(start, "acknowledge_callback", ack)
     cq = MagicMock(message=message)
-    asyncio.run(start.help_button(cq))
+    asyncio.run(start.help_button(cq, bot))
     ack.assert_awaited_once_with(cq)
     assert message.answer.await_count == 2

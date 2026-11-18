@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 
 from aiogram import BaseMiddleware, Bot
 from aiogram.enums import ChatMemberStatus, ChatType
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import (
+    CallbackQuery,
+    ChosenInlineResult,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InlineQuery,
+    Message,
+)
 
 from app.bot.activity import is_admin
 from app.bot.errors import acknowledge_callback
@@ -18,10 +26,13 @@ from app.config import Settings
 from app.i18n import t
 from app.platforms import registry
 from app.services import captions
+from app.services.delivery import edit_status
 from app.services.keyboards import LANGUAGE, SEP, force_join_kb
 
 log = logging.getLogger(__name__)
 CHECK_PREFIX = "force_join:"
+INLINE_MEMBER_TTL = 60.0
+INLINE_NONMEMBER_TTL = 5.0
 MEMBER_STATUSES = {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER}
 
 
@@ -35,6 +46,8 @@ class Channel:
 class MembershipMiddleware(BaseMiddleware):
     def __init__(self, channels: list[Channel] | tuple[Channel, ...] = (), bot_username: str = ""):
         self.channels, self.bot_username = tuple(channels), bot_username
+        # Inline queries arrive per keystroke: user id -> (expiry, channels still to join).
+        self._inline_seen: dict[int, tuple[float, list[Channel]]] = {}
 
     @classmethod
     async def configure(cls, bot: Bot, settings: Settings):
@@ -100,6 +113,63 @@ class MembershipMiddleware(BaseMiddleware):
         joined = await asyncio.gather(*(self._joined(bot, channel, user_id) for channel in self.channels))
         return [channel for channel, ok in zip(self.channels, joined, strict=True) if not ok]
 
+    async def missing_inline(self, bot: Bot, user_id: int) -> list[Channel]:
+        """`missing()` remembered briefly: members for INLINE_MEMBER_TTL, others for a few seconds
+        (so joining takes effect quickly). Lookup failures are never remembered."""
+        now = time.monotonic()
+        seen = self._inline_seen.get(user_id)
+        if seen and seen[0] > now:
+            return seen[1]
+        missing = await self.missing(bot, user_id)
+        if len(self._inline_seen) > 10_000:
+            self._inline_seen.clear()
+        self._inline_seen[user_id] = (now + (INLINE_NONMEMBER_TTL if missing else INLINE_MEMBER_TTL), missing)
+        return missing
+
+    async def _inline(self, handler, event, data):
+        """Inline queries get an empty list with a join button; a chosen card shows the prompt."""
+        user, bot = event.from_user, data["bot"]
+        notice = None
+        try:
+            if isinstance(event, InlineQuery):
+                missing = await self.missing_inline(bot, user.id)
+            else:
+                missing = await self.missing(bot, user.id)
+        except (TelegramAPIError, TimeoutError) as error:
+            log.warning("membership verification unavailable: %s", type(error).__name__)
+            missing, notice = list(self.channels), captions.JOIN_UNAVAILABLE
+        if not missing:
+            return await handler(event, data)
+        from app.services.inline import bot_link, results_button
+
+        if isinstance(event, InlineQuery):
+            text = notice or t("🔒 Join our channel to use the bot")
+            try:
+                await event.answer(
+                    [], cache_time=0, is_personal=True, button=results_button(text, "join"), request_timeout=5
+                )
+            except (TelegramAPIError, TimeoutError):
+                log.debug("inline join prompt failed")
+        elif event.inline_message_id:
+            required = self._notice(captions.JOIN_REQUIRED, captions.JOIN_REQUIRED_MANY, missing)
+            rows = [
+                [InlineKeyboardButton(text=t("Join {title} ↗️", title=channel.title[:32]), url=channel.url)]
+                for channel in missing
+            ]
+            rows.append(
+                [InlineKeyboardButton(text=t("🤖 Open the bot"), url=bot_link(self.bot_username, "join"))]
+            )
+            await edit_status(
+                bot,
+                0,
+                0,
+                captions.force_join_caption([channel.title for channel in missing], notice or required),
+                False,
+                InlineKeyboardMarkup(inline_keyboard=rows),
+                inline_id=event.inline_message_id,
+            )
+        return None
+
     @staticmethod
     def _notice(single: str, many: str, channels) -> str:
         return single if len(channels) <= 1 else many
@@ -141,6 +211,8 @@ class MembershipMiddleware(BaseMiddleware):
         check = callback and bool(event.data) and event.data.startswith(CHECK_PREFIX)
         if not self.channels and not check:
             return await handler(event, data)
+        if isinstance(event, (InlineQuery, ChosenInlineResult)):
+            return await self._inline(handler, event, data)
         if not isinstance(event, (Message, CallbackQuery)):
             return await handler(event, data)
         if isinstance(event, Message) and not self.relevant_message(event):

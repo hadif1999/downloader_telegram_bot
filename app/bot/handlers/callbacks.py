@@ -11,10 +11,10 @@ from aiogram.types import CallbackQuery, Message
 from app.bot.errors import acknowledge_callback, report_error
 from app.config import get_settings
 from app.platforms import registry
-from app.services import captions, media, requests
-from app.services.delivery import retry_send
+from app.services import captions, inline, media, requests
+from app.services.delivery import edit_status, retry_send
 from app.services.jobs import request_download
-from app.services.keyboards import CANCEL, SEP, formats_kb, languages_kb, parse_cb
+from app.services.keyboards import CANCEL, SEP, formats_kb, inline_again_kb, languages_kb, parse_cb
 
 log = logging.getLogger(__name__)
 router = Router(name="callbacks")
@@ -108,12 +108,27 @@ async def on_cancel(cq: CallbackQuery) -> None:
 async def _show_cancelled(cq: CallbackQuery, request_id: str) -> None:
     """A queued job never reached a worker, so the bot redraws its card with the format menu."""
     msg = cq.message
-    if not isinstance(msg, Message):
+    if not isinstance(msg, Message) and not cq.inline_message_id:
         return
     try:
         state = await asyncio.to_thread(requests.load, request_id, cq.from_user.id)
         platform_name, media_id, fmt, lang = (state.get("media", "").split("|") + [""] * 4)[:4]
         info = await media.resolve_async(platform_name, media_id) if media_id else None
+        if not isinstance(msg, Message):  # an inline card in another chat: offer the formats again
+            text = captions.INLINE_CANCELLED
+            if info is not None:
+                text = captions.status_caption(info, text, fmt, lang or None)
+            await edit_status(
+                cq.bot,
+                0,
+                0,
+                text,
+                False,
+                inline_again_kb(inline.switch_query(info)),
+                inline_id=cq.inline_message_id,
+                preview=inline.preview_url(info),
+            )
+            return
         if info is None:
             text, kb = captions.CANCEL_DONE, None
         else:

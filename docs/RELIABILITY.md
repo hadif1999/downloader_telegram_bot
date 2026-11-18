@@ -50,6 +50,35 @@ only the ordering:
   step to `QUEUE_TTL` + 1 h. A hard kill of a worker during an item (task time limit) can leave the
   batch waiting: the items already sent stay sent, and the batch expires.
 
+## Inline mode (cards in other chats)
+
+A chosen inline result is an **ordinary request** (journal, user lock, lease, cancel, retries)
+whose status card is the inline message. `chat_id` is the user's private chat, and the Celery
+task carries `inline=<inline_message_id>`. What differs is delivery, because Telegram only lets
+an inline message show a file that is already uploaded:
+
+- **Starting once.** A chosen result and its ▶️ Start button (the fallback when the
+  chosen-result update doesn't arrive) both claim `inl:<bot>:started:<inline_message_id>` with
+  `SET NX`. Refusals before queueing (busy, too large, expired) give the claim back. Result IDs
+  include the user, and only that user can start one.
+- **Stored, then edited.** The worker uploads to `INLINE_STORAGE_CHAT_ID` (or the user's private
+  chat) through the Journal as usual (`sending` -> `ready`, ambiguous -> `uncertain`), records step
+  `stored`, then swaps the card for the media with `editMessageMedia(file_id)` (`edited`).
+- **The edit is idempotent**, so unlike a send it is retried after network errors and replayed
+  after a crash: a redelivery that finds every file uploaded goes straight to the edit and never
+  uploads again. An edit that stays unconfirmed after retries ends `uncertain`.
+- **Private-chat fallback only after a definite refusal** (400/403/404 on the edit). The worker
+  records `pm_sending` before that send. A replay that finds `pm_sending` reports uncertain
+  instead of sending again. A definite refusal of the private send (the user never pressed
+  Start) ends at step `start`: the card links to `/start g_<result>`, which sends the cached
+  file in the private chat as a new request. With no storage channel the private chat already
+  holds the copy, so nothing is sent twice. If that upload itself is refused, the card shows
+  the same Start link.
+- **Cached formats** are offered as cached results that Telegram sends itself (no request). A
+  format cached between listing and choosing is put on the card directly. That edit runs without
+  a journal because repeating it is harmless. If its outcome is unknown, nothing is queued behind it.
+- Each step is written with the same owner check as phase transitions (`requests.set_step`).
+
 ## Persistence and deployment
 
 Redis is required state, not merely a disposable cache. Compose uses AOF and `appendfsync always`

@@ -46,6 +46,16 @@ cp deploy/tg_dl-loop-dio.service /etc/systemd/system/ && systemctl daemon-reload
 systemctl enable --now tg_dl-loop-dio.service && losetup -l -O NAME,BACK-FILE,DIO
 ```
 
+### Inline mode (once)
+
+In @BotFather: `/setinline` (placeholder text) and `/setinlinefeedback` -> Enabled. Create a
+private channel, add the bot as an admin with "Post messages", and put its ID in `.env` as
+`INLINE_STORAGE_CHAT_ID`. The bot refuses to start if it can't post there, so check
+`docker compose -p tg_dl logs bot` after the first start with it. Replacing a text card with
+media (`editMessageMedia` on an inline text message) needs a recent Bot API server: pull
+`aiogram/telegram-bot-api:latest` before that release
+(`docker compose -p tg_dl -f docker-compose.yml -f docker-compose.prod.yml pull telegram-bot-api`).
+
 ## Release
 
 Uploads to the VPS are slow (~150 KB/s), so the image is **built on the VPS** from the source,
@@ -96,7 +106,8 @@ docker ps --format '{{.Names}} {{.Status}}' | grep -v tg_dl  # the other stacks 
 Functional check from Telegram: `/admin` from an `ADMIN_IDS` account (dashboard opens; 🖥 System
 lists the bot and the worker), `/start` (Farsi welcome with the `/language` hint), `/language`
 (🇮🇷/🇬🇧 buttons), a short video link (format card, live progress card, file delivered), and
-`✖️ لغو دانلود` on a large format.
+`✖️ لغو دانلود` on a large format, and inline mode: `@bot <link>` in a chat the bot isn't in (results
+with thumbnails; picking one shows progress, then the file; the same format again is instant).
 
 A download can also be exercised without Telegram, inside the worker container:
 

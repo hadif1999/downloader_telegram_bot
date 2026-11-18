@@ -13,7 +13,8 @@ All platforms from the reference screenshots are implemented (see the table in t
 
 ## Features
 - [x] Several links in one message (summary card, one download after another)
-- [ ] Inline mode (`@bot <link>`)
+- [x] Inline mode (`@bot <link>`): format list, progress on the card, private-chat fallback
+- [ ] Inline mode: playlists/albums inline (today they open in the bot); inline results for other audio languages
 - [x] Farsi (default) and English interface with `/language` (`app/i18n`)
 - [ ] More interface languages (add a catalog next to `app/i18n/fa.py`)
 - [ ] YouTube is throttled (~0.4 MB/s) from the production VPS: cookies or another route would help

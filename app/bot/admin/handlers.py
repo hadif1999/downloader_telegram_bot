@@ -138,6 +138,7 @@ def _find_target(request_id: str) -> dict | None:
                 "chat": task.chat,
                 "message": task.message,
                 "is_caption": task.is_caption,
+                "inline": task.inline,
                 "queued": True,
             }
     return None
@@ -157,13 +158,23 @@ async def kill_confirmed(cq, arg, state, bot):
         await notify(cq, t("That download has already finished."), alert=True)
         return await queue(cq, arg, state, bot)
     outcome = await asyncio.to_thread(ops.cancel, arg, int(target["user"]))
-    if outcome == requests.CANCEL_STOPPED and target.get("queued") and target.get("message"):
+    if (
+        outcome == requests.CANCEL_STOPPED
+        and target.get("queued")
+        and (target.get("message") or target.get("inline"))
+    ):
         # The worker will skip it; nobody else redraws the user's "queued" card. In their language.
         admin_language = i18n.current()
         try:
             i18n.use(await asyncio.to_thread(i18n.load, int(target["user"])))
+            inline_id = target.get("inline")
             await delivery.edit_status(
-                bot, target["chat"], target["message"], captions.CANCELLED, target["is_caption"]
+                bot,
+                target["chat"],
+                target["message"],
+                captions.INLINE_CANCELLED if inline_id else captions.CANCELLED,
+                target["is_caption"],
+                inline_id=inline_id,
             )
         except Exception:
             log.debug("couldn't update the cancelled request's card")

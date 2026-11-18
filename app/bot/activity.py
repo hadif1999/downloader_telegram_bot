@@ -1,6 +1,7 @@
 """Who uses the bot, and who may: activity statistics, admin bans and maintenance mode.
 
-`ActivityMiddleware` runs right after the language middleware on every message and callback:
+`ActivityMiddleware` runs right after the language middleware on every message, callback and
+inline query or chosen inline result:
 it records the user's activity in the background (throttled, see `stats.record_activity`), drops
 updates from banned users and answers everyone but admins with a notice in maintenance mode.
 The ban list and maintenance flag are cached for FLAGS_TTL seconds; admin changes refresh them
@@ -15,13 +16,14 @@ import time
 
 from aiogram import Router
 from aiogram.enums import ChatMemberStatus, ChatType
-from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
+from aiogram.types import CallbackQuery, ChatMemberUpdated, ChosenInlineResult, InlineQuery, Message
 
 from app.bot.errors import acknowledge_callback
 from app.config import get_settings
 from app.i18n import t
 from app.platforms import registry
-from app.services import stats
+from app.services import captions, stats
+from app.services.delivery import edit_status
 
 log = logging.getLogger(__name__)
 router = Router(name="activity")
@@ -126,11 +128,17 @@ class ActivityMiddleware:
         if user.id in state.banned:
             if isinstance(event, CallbackQuery):
                 await acknowledge_callback(event)
+            elif isinstance(event, InlineQuery):
+                await _answer_inline(event, None)
             return None  # silently: a banned user learns nothing new
         if state.maintenance:
             text = notice_text(state.maintenance)
             if isinstance(event, CallbackQuery):
                 await acknowledge_callback(event, text, show_alert=True)
+            elif isinstance(event, InlineQuery):
+                await _answer_inline(event, captions.INLINE_MAINTENANCE)
+            elif isinstance(event, ChosenInlineResult) and event.inline_message_id:
+                await edit_status(event.bot, 0, 0, text, False, inline_id=event.inline_message_id)
             elif isinstance(event, Message) and addressed(event):
                 try:
                     await event.answer(text, request_timeout=5)
@@ -138,6 +146,22 @@ class ActivityMiddleware:
                     log.debug("maintenance notice failed")
             return None
         return await handler(event, data)
+
+
+async def _answer_inline(query: InlineQuery, notice: str | None) -> None:
+    """No results; a notice (maintenance) shows as the button above the empty list."""
+    from app.services.inline import results_button
+
+    try:
+        await query.answer(
+            [],
+            cache_time=30,
+            is_personal=True,
+            button=results_button(notice, "start") if notice else None,
+            request_timeout=5,
+        )
+    except Exception:
+        log.debug("inline notice failed")
 
 
 @router.my_chat_member()

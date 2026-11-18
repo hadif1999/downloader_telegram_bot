@@ -26,6 +26,7 @@ class QueuedTask:
     message: int | None = None
     is_caption: bool = False
     batch: bool = False
+    inline: str | None = None  # inline_message_id of a card posted through inline mode
 
 
 def _decode(raw: str) -> QueuedTask | None:
@@ -44,6 +45,7 @@ def _decode(raw: str) -> QueuedTask | None:
         task.chat, task.message, task.is_caption = args[0], args[1], bool(args[2])
         task.platform, task.fmt, task.user = str(args[3]), str(args[5]), args[7]
         task.batch = bool((kwargs or {}).get("batch"))
+        task.inline = (kwargs or {}).get("inline") or None
     return task
 
 

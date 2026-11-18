@@ -21,10 +21,11 @@ retries, cancel, disk retention: the invariants the tests protect), `docs/DEPLOY
 
 | Area | Where |
 |---|---|
-| Bot entry, middlewares order (language -> membership gate) | `app/bot/main.py` |
+| Bot entry, middlewares order (language -> activity -> membership gate, also on inline updates) | `app/bot/main.py` |
 | Link -> format card, callbacks, Cancel button, `/language` | `app/bot/handlers/`, `app/bot/language.py` |
 | Required channels (`FORCE_JOIN_CHANNEL_ID`, comma list) | `app/bot/membership.py` |
 | Queueing, cached re-sends | `app/services/jobs.py` |
+| Inline mode (`@bot <link>`): results, start-once, storage upload then `editMessageMedia` | `app/bot/handlers/inline.py`, `app/services/inline.py`, `deliver_inline` in `app/services/delivery.py` |
 | Playlists / albums / several links: batch store, summary card, chain | `app/services/batches.py`, `app/bot/handlers/batch.py`, `advance_batch` in `app/worker/tasks.py` |
 | Celery task: download, live progress, retries, upload | `app/worker/tasks.py` |
 | Progress card rendering (thread-safe Monitor) | `app/services/progress.py` |

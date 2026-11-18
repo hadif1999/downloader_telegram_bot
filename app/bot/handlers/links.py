@@ -57,9 +57,13 @@ async def extraction_progress(status: Message, platform: str) -> None:
 
 @router.message(F.text | F.caption)
 async def on_link(message: Message) -> None:
-    found, skipped = registry.detect_all(
-        message.text or message.caption or "", get_settings().message_max_links
-    )
+    await handle_links(message, message.text or message.caption or "")
+
+
+async def handle_links(message: Message, text: str) -> None:
+    """The links in `text` (one: format card; several: batch card), answered under `message`.
+    Also reached from `/start l_<token>`, the "open in the bot" deep link of inline mode."""
+    found, skipped = registry.detect_all(text, get_settings().message_max_links)
     if not found:
         if message.chat.type == ChatType.PRIVATE:
             await message.reply(

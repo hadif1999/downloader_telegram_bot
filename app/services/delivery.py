@@ -13,7 +13,9 @@ from aiogram.exceptions import (
     TelegramAPIError,
     TelegramBadRequest,
     TelegramEntityTooLarge,
+    TelegramForbiddenError,
     TelegramNetworkError,
+    TelegramNotFound,
     TelegramRetryAfter,
     TelegramServerError,
 )
@@ -23,6 +25,7 @@ from aiogram.types import (
     InputMediaAudio,
     InputMediaPhoto,
     InputMediaVideo,
+    LinkPreviewOptions,
     Message,
     ReplyParameters,
 )
@@ -84,13 +87,23 @@ class Journal:
     owner: str
     sent: list = field(default_factory=list)
     total: int = 0
+    step: str = ""  # inline delivery progress (see requests.set_step)
 
     @classmethod
     async def load(cls, request_id: str, user_id: int, owner: str):
         state = await asyncio.to_thread(requests.load, request_id, user_id)
         return cls(
-            request_id, user_id, owner, json.loads(state.get("sent", "[]")), int(state.get("total", 0))
+            request_id,
+            user_id,
+            owner,
+            json.loads(state.get("sent", "[]")),
+            int(state.get("total", 0)),
+            state.get("step", ""),
         )
+
+    async def mark(self, step: str):
+        await asyncio.to_thread(requests.set_step, self.request_id, self.user_id, self.owner, step)
+        self.step = step
 
     async def phase(self, phase: str):
         await asyncio.to_thread(
@@ -277,20 +290,137 @@ async def send_cached(
         )
 
 
-async def edit_status(bot: Bot, chat_id: int, msg_id: int, text: str, is_caption: bool, markup=None) -> None:
-    """Edit the status card. Without `markup` any keyboard (e.g. Cancel) is removed."""
+async def edit_status(
+    bot: Bot,
+    chat_id: int,
+    msg_id: int,
+    text: str,
+    is_caption: bool,
+    markup=None,
+    *,
+    inline_id: str | None = None,
+    preview: str | None = None,
+) -> None:
+    """Edit the status card. Without `markup` any keyboard (e.g. Cancel) is removed.
+
+    `inline_id` targets a card posted through inline mode (always text) instead of a chat message;
+    `preview` keeps its thumbnail shown as a large link preview above the text."""
+    target = {"inline_message_id": inline_id} if inline_id else {"chat_id": chat_id, "message_id": msg_id}
     try:
-        if is_caption:
-            await bot.edit_message_caption(
-                chat_id=chat_id, message_id=msg_id, caption=text, reply_markup=markup, request_timeout=5
-            )
+        if is_caption and not inline_id:
+            await bot.edit_message_caption(**target, caption=text, reply_markup=markup, request_timeout=5)
         else:
-            await bot.edit_message_text(
-                text, chat_id=chat_id, message_id=msg_id, reply_markup=markup, request_timeout=5
-            )
+            extra = {}
+            if preview:
+                extra["link_preview_options"] = LinkPreviewOptions(
+                    url=preview, prefer_large_media=True, show_above_text=True
+                )
+            await bot.edit_message_text(text, **target, reply_markup=markup, request_timeout=5, **extra)
     except (TelegramAPIError, TimeoutError) as e:
         # "message is not modified", deleted message, flood limits, network blips:
         # a failed status edit must never abort the download itself
         log.debug("status edit failed: %s", type(e).__name__)
     except Exception:
         log.exception("unexpected status edit failure: chat=%s message=%s", chat_id, msg_id)
+
+
+# --- inline mode: the card posted in someone else's chat becomes the media
+
+INLINE_MEDIA = {"video": InputMediaVideo, "audio": InputMediaAudio, "photo": InputMediaPhoto}
+INLINE_FINAL = {"edited", "pm", "start"}
+DEFINITE = (TelegramBadRequest, TelegramForbiddenError, TelegramNotFound, DeliveryNotSent)
+
+
+async def put_inline(bot: Bot, inline_id: str, kind: str, file_id: str, caption: str, markup=None) -> None:
+    """Replace an inline card with already-uploaded media (inline messages only take file_ids).
+
+    Editing is idempotent, so unlike a send it is safe to retry after an unknown outcome: repeating
+    it can never create a second message. Raises a `DEFINITE` error when Telegram refused the edit,
+    or the last network error when its outcome stayed unknown."""
+    extra = {"supports_streaming": True} if kind == "video" else {}
+    item = INLINE_MEDIA[kind](media=file_id, caption=caption, **extra)
+    for attempt in range(3):
+        try:
+            await bot.edit_message_media(media=item, inline_message_id=inline_id, reply_markup=markup)
+            return
+        except TelegramBadRequest as error:
+            if "message is not modified" in error.message.lower():
+                return  # an earlier attempt already went through
+            raise
+        except TelegramRetryAfter as error:
+            if attempt == 2 or error.retry_after > 60:
+                raise DeliveryNotSent from error
+            await asyncio.sleep(error.retry_after + 1)
+        except (TelegramNetworkError, TelegramServerError):
+            if attempt == 2:
+                raise
+            await asyncio.sleep(2**attempt)
+
+
+async def _send_file(bot: Bot, chat_id: int, kind: str, file_id: str, caption: str):
+    if kind == "audio":
+        return await bot.send_audio(chat_id, file_id, caption=caption)
+    if kind == "photo":
+        return await bot.send_photo(chat_id, file_id, caption=caption)
+    return await bot.send_video(chat_id, file_id, caption=caption, supports_streaming=True)
+
+
+async def deliver_inline(
+    bot: Bot,
+    journal: Journal,
+    inline_id: str,
+    kind: str,
+    file_id: str,
+    caption: str,
+    *,
+    stored_in_pm: bool,
+    markup=None,
+    notice=None,
+) -> str:
+    """Finish an inline request whose file is already uploaded to the storage chat.
+
+    1. Swap the card for the media (`edited`).
+    2. If Telegram definitely refused that (deleted card, media not allowed in that chat), send the
+       file to the user's private chat (`pm`), unless it is already there as the storage copy.
+    3. If the bot may not message the user (they never pressed Start), say so on the card
+       (`start`).
+    A private-chat send whose outcome is unknown is never repeated (`pm_sending` -> uncertain), and
+    neither is an edit that stayed unconfirmed. `notice(step)` edits the card for steps 2 and 3.
+    Returns the final step."""
+    if journal.step in INLINE_FINAL:
+        return journal.step
+    try:
+        await put_inline(bot, inline_id, kind, file_id, caption, markup)
+        step = "edited"
+    except DEFINITE as refused:
+        log.info("inline card refused the media (%s): request=%s", type(refused).__name__, journal.request_id)
+        if stored_in_pm:
+            step = "pm"
+        elif journal.step == "pm_sending":
+            await _uncertain(journal)  # an earlier attempt may have reached the private chat
+            raise requests.DeliveryUncertain from None
+        else:
+            await journal.mark("pm_sending")  # persist intent before the external side effect
+            try:
+                await retry_send(lambda: _send_file(bot, journal.user_id, kind, file_id, caption))
+                step = "pm"
+            except DEFINITE:
+                step = "start"
+            except Exception as error:
+                await _uncertain(journal)
+                raise requests.DeliveryUncertain from error
+        if notice is not None:
+            await notice(step)
+    except (TelegramNetworkError, TelegramServerError) as error:
+        await _uncertain(journal)
+        raise requests.DeliveryUncertain from error
+    try:
+        await journal.mark(step)
+    except Exception:
+        log.exception("couldn't record the inline delivery step: request=%s", journal.request_id)
+    return step
+
+
+async def _uncertain(journal: Journal) -> None:
+    with contextlib.suppress(Exception):
+        await journal.phase("uncertain")

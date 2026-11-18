@@ -194,6 +194,29 @@ class Settings(BaseSettings):
     # its stream URLs (the worker skips a second lookup; capped at 4 h, YouTube URLs expire at ~6 h).
     info_cache_ttl: int = Field(default=2 * 3600, ge=60, le=7 * 24 * 3600)
 
+    # Inline mode (`@bot <link>` in any chat). Telegram only lets inline messages show files that
+    # are already uploaded, so each download is uploaded to this chat first, then swapped into the
+    # inline message: a private channel (numeric ID or @username) where the bot is an admin that
+    # may post. Empty: the user's private chat with the bot holds that copy (works only for users
+    # who have pressed Start).
+    inline_storage_chat_id: str = ""
+    # Seconds an inline query waits for a link lookup before answering "still looking" (Telegram
+    # drops answers that take much longer); the lookup keeps running and fills the cache.
+    inline_lookup_timeout: float = Field(default=6, ge=1, le=9)
+
+    @field_validator("inline_storage_chat_id")
+    @classmethod
+    def storage_chat(cls, value):
+        value = value.strip()
+        if value and not re.fullmatch(r"-?\d{1,20}|@[A-Za-z][A-Za-z0-9_]{3,31}", value):
+            raise ValueError("INLINE_STORAGE_CHAT_ID must be a numeric chat ID or a @channel username")
+        return value
+
+    @property
+    def inline_storage_chat(self) -> int | str | None:
+        value = self.inline_storage_chat_id
+        return (int(value) if value.lstrip("-").isdigit() else value) if value else None
+
     @property
     def max_file_bytes(self) -> int:
         return self.max_file_mb * 1024 * 1024

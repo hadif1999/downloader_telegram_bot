@@ -14,8 +14,15 @@ from aiogram.types import Message
 from app import i18n
 from app.config import get_settings
 from app.models import MediaInfo
-from app.services import cache, captions, media, requests, stats
-from app.services.delivery import CheckpointError, Journal, invalid_file_id, reply_params, send_cached
+from app.services import cache, captions, inline, media, requests, stats
+from app.services.delivery import (
+    CheckpointError,
+    Journal,
+    edit_status,
+    invalid_file_id,
+    reply_params,
+    send_cached,
+)
 from app.services.errors import user_message
 from app.services.keyboards import cancel_kb, formats_kb
 
@@ -33,10 +40,15 @@ async def start_download(
     card: Message | None = None,
     reply_to: int | None = None,
     batch: tuple[str, int] | None = None,
+    inline_id: str | None = None,
 ) -> tuple[str | None, bool]:
     """Queue a download. `card` (the info card) is edited into the progress message; without it a
     new status message is sent. Returns (error text for the user or None, whether a worker task
-    now owns the request). `batch` = (batch id, item index) when the item belongs to a batch."""
+    now owns the request). `batch` = (batch id, item index) when the item belongs to a batch.
+
+    `inline_id`: the card is an inline-mode message in another chat. It shows the progress and
+    becomes the media; `chat_id` is then the user's private chat (the fallback destination).
+    Cached files never get here in inline mode: the inline handler puts them on the card itself."""
     if not media.valid_choice(info, fmt, lang):
         return captions.UNAVAILABLE, False
     fo = info.format(fmt)
@@ -48,7 +60,11 @@ async def start_download(
     try:
         from app.worker.tasks import download_media
 
-        cached = await asyncio.to_thread(cache.get_file_id, info.platform, info.id, fmt, lang)
+        cached = (
+            None
+            if inline_id
+            else await asyncio.to_thread(cache.get_file_id, info.platform, info.id, fmt, lang)
+        )
         if not cached and too_large:
             return captions.TOO_BIG, False
         media_ref = "|".join([info.platform, info.id, fmt, lang or ""])
@@ -105,7 +121,19 @@ async def start_download(
             await asyncio.to_thread(requests.cancel_queued, request_id, user_id)
             return captions.TOO_BIG, False
         stop = cancel_kb(request_id)
-        if card is not None:
+        if inline_id:
+            await edit_status(
+                bot,
+                chat_id,
+                0,
+                captions.status_caption(info, captions.QUEUED, fmt, lang),
+                False,
+                stop,
+                inline_id=inline_id,
+                preview=inline.preview_url(info),
+            )
+            status_id, is_caption = 0, False
+        elif card is not None:
             text = captions.status_caption(info, captions.QUEUED, fmt, lang)
             if card.photo:
                 await card.edit_caption(caption=text, reply_markup=stop)
@@ -129,7 +157,11 @@ async def start_download(
         await asyncio.to_thread(
             download_media.apply_async,
             args=(chat_id, status_id, is_caption, info.platform, info.id, fmt, lang, user_id, reply_to),
-            kwargs={"ui_language": i18n.current(), **({"batch": list(batch)} if batch else {})},
+            kwargs={
+                "ui_language": i18n.current(),
+                **({"batch": list(batch)} if batch else {}),
+                **({"inline": inline_id} if inline_id else {}),
+            },
             task_id=request_id,
             expires=get_settings().queue_ttl,
             retry=False,
@@ -177,9 +209,18 @@ async def request_download(
     user_id: int,
     card: Message | None = None,
     reply_to: int | None = None,
+    inline_id: str | None = None,
 ) -> str | None:
     """Queue a download (see start_download). Returns an error text for the user, or None."""
     error, _ = await start_download(
-        bot, info, fmt, lang, chat_id=chat_id, user_id=user_id, card=card, reply_to=reply_to
+        bot,
+        info,
+        fmt,
+        lang,
+        chat_id=chat_id,
+        user_id=user_id,
+        card=card,
+        reply_to=reply_to,
+        inline_id=inline_id,
     )
     return error

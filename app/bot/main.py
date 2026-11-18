@@ -5,7 +5,7 @@ from aiogram import Dispatcher
 
 from app.bot import activity, admin, language
 from app.bot.errors import on_error
-from app.bot.handlers import batch, callbacks, links, start
+from app.bot.handlers import batch, callbacks, inline, links, start
 from app.bot.membership import MembershipMiddleware
 from app.config import get_settings
 from app.logging_config import redact_logs
@@ -25,22 +25,26 @@ async def main() -> None:
         activity.router,
         language.router,
         start.router,
+        inline.router,
         batch.router,
         callbacks.router,
         links.router,
     )
+    # every kind of update a user sends: messages, buttons, inline queries and chosen results
+    observers = (dp.message, dp.callback_query, dp.inline_query, dp.chosen_inline_result)
     languages = language.LanguageMiddleware()
-    dp.message.outer_middleware(languages)
-    dp.callback_query.outer_middleware(languages)
+    for observer in observers:
+        observer.outer_middleware(languages)
     # statistics, bans and maintenance mode, before the channel gate (which costs API calls)
     usage = activity.ActivityMiddleware()
-    dp.message.outer_middleware(usage)
-    dp.callback_query.outer_middleware(usage)
+    for observer in observers:
+        observer.outer_middleware(usage)
     health.start_heartbeat("bot")
     try:
         membership = await MembershipMiddleware.configure(bot, get_settings())
-        dp.message.outer_middleware(membership)
-        dp.callback_query.outer_middleware(membership)
+        for observer in observers:
+            observer.outer_middleware(membership)
+        await inline.check_storage(bot)
         await bot.delete_webhook(drop_pending_updates=False, request_timeout=15)
         await language.publish_commands(bot)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types(), close_bot_session=False)

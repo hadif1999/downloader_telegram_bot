@@ -10,15 +10,38 @@ import time
 import uuid
 from pathlib import Path
 
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import FSInputFile
 
 from app import i18n
 from app.config import get_settings
+from app.i18n import t
 from app.platforms import registry
 from app.platforms.common import describe, download_file, retry_delay
 from app.platforms.ytdlp import TooLarge, UserError, retryable
-from app.services import batches, cache, captions, jobs, keyboards, media, progress, requests, stats, storage
-from app.services.delivery import CheckpointError, Journal, edit_status, local_file, send_gallery, send_media
+from app.services import (
+    batches,
+    cache,
+    captions,
+    inline,
+    jobs,
+    keyboards,
+    media,
+    progress,
+    requests,
+    stats,
+    storage,
+)
+from app.services.delivery import (
+    INLINE_FINAL,
+    CheckpointError,
+    Journal,
+    deliver_inline,
+    edit_status,
+    local_file,
+    send_gallery,
+    send_media,
+)
 from app.services.errors import user_message
 from app.services.telegram import make_bot
 from app.worker.celery_app import celery
@@ -26,6 +49,10 @@ from app.worker.celery_app import celery
 log = logging.getLogger(__name__)
 PROGRESS_EVERY_SEC = 3  # status card refresh in private chats
 GROUP_PROGRESS_EVERY_SEC = 5  # groups allow ~20 edits per minute
+
+
+class NeedsStart(Exception):
+    """Inline request without a storage channel, from a user who never started the bot."""
 
 
 def make_thumb(url: str | None, dest: Path) -> Path | None:
@@ -81,13 +108,24 @@ def download_media(
     reply_to=None,
     ui_language=None,
     batch=None,
+    inline=None,
 ):
     i18n.use(ui_language)  # the requester's language for every status edit of this task
     retrying, failure = False, None
     try:
         return asyncio.run(
             _run(
-                chat_id, msg_id, is_caption, platform, media_id, fmt, lang, reply_to, user_id, self.request.id
+                chat_id,
+                msg_id,
+                is_caption,
+                platform,
+                media_id,
+                fmt,
+                lang,
+                reply_to,
+                user_id,
+                self.request.id,
+                **({"inline_id": inline} if inline else {}),
             )
         )
     except requests.LeaseBusy as error:
@@ -210,8 +248,21 @@ async def _advance(batch_id: str, after: int) -> None:
 
 
 async def _run(
-    chat_id, msg_id, is_caption, platform_name, media_id, fmt, lang, reply_to, user_id, request_id
+    chat_id,
+    msg_id,
+    is_caption,
+    platform_name,
+    media_id,
+    fmt,
+    lang,
+    reply_to,
+    user_id,
+    request_id,
+    *,
+    inline_id=None,
 ):
+    """`inline_id`: the status card is an inline-mode message in another chat (see
+    delivery.deliver_inline); `chat_id` is then the user's private chat."""
     bot = make_bot(for_upload=True)
     s = get_settings()
     dest = s.download_dir / uuid.uuid4().hex
@@ -229,7 +280,56 @@ async def _run(
 
     async def status(text, markup=None):
         body = captions.status_caption(info, text, fmt, lang) if info else text
-        await edit_status(bot, chat_id, msg_id, body, is_caption, markup)
+        if inline_id:
+            await edit_status(
+                bot,
+                chat_id,
+                msg_id,
+                body,
+                False,
+                markup,
+                inline_id=inline_id,
+                preview=inline.preview_url(info),
+            )
+        else:
+            await edit_status(bot, chat_id, msg_id, body, is_caption, markup)
+
+    def again_kb():
+        """The card's keyboard after a cancel or failure: inline cards reopen the format list."""
+        if inline_id:
+            return keyboards.inline_again_kb(inline.switch_query(info))
+        return keyboards.formats_kb(info, s.max_file_bytes) if info else None
+
+    async def start_kb():
+        """Deep link that sends this result in the private chat once the user presses Start."""
+        me = await bot.get_me()
+        await asyncio.to_thread(inline.save_choices, user_id, info, [fmt])
+        rid = inline.result_id(user_id, platform_name, media_id, fmt)
+        return keyboards.url_kb(t("🤖 Open the bot"), inline.bot_link(me.username, "g_" + rid))
+
+    async def finish_inline(kind, file_id):
+        """The file is in the storage chat: put it on the inline card (or fall back)."""
+        me = await bot.get_me()
+        caption = captions.result_caption(info, me.username)
+
+        async def notice(step):
+            if step == "pm":
+                kb = keyboards.url_kb(t("🤖 Open the bot"), inline.bot_link(me.username))
+                await status(captions.INLINE_SENT_PM, kb)
+            else:
+                await status(captions.INLINE_PRESS_START, await start_kb())
+
+        return await deliver_inline(
+            bot,
+            journal,
+            inline_id,
+            kind,
+            file_id,
+            caption,
+            stored_in_pm=not s.inline_storage_chat,
+            markup=keyboards.inline_result_kb(inline.switch_query(info), kind),
+            notice=notice,
+        )
 
     async def show():
         """Render the live card; edits are serialized so a slow edit can't land out of order."""
@@ -249,6 +349,7 @@ async def _run(
                 "lang": lang,
                 "user": user_id,
                 "chat": chat_id,
+                "inline": bool(inline_id),
                 "title": (info.title or "")[:80],
                 "started": wall_started,
                 **monitor.snapshot(),
@@ -256,7 +357,8 @@ async def _run(
             stats.publish_live(request_id, snapshot)
 
     async def watch():
-        every = GROUP_PROGRESS_EVERY_SEC if chat_id < 0 else PROGRESS_EVERY_SEC
+        # inline cards usually sit in groups or chats with other people: edit at the slower pace
+        every = GROUP_PROGRESS_EVERY_SEC if chat_id < 0 or inline_id else PROGRESS_EVERY_SEC
         while True:
             await asyncio.sleep(every)
             with contextlib.suppress(progress.Cancelled):
@@ -314,17 +416,26 @@ async def _run(
                     return
                 journal = await Journal.load(request_id, user_id, owner)
                 if journal.total and len(journal.sent) == journal.total:
+                    if inline_id and journal.step not in INLINE_FINAL:
+                        # Uploaded to the storage chat before a crash: finish the (idempotent) edit.
+                        info = await asyncio.to_thread(media.resolve, platform_name, media_id)
+                        if info is None:
+                            raise UserError(captions.EXPIRED)
+                        await finish_inline(*journal.sent[0])
                     with contextlib.suppress(Exception):
                         await journal.phase("done")
-                    with contextlib.suppress(Exception):
-                        await bot.delete_message(chat_id, msg_id)
+                    if not inline_id:
+                        with contextlib.suppress(Exception):
+                            await bot.delete_message(chat_id, msg_id)
                     return
 
                 platform = registry.get(platform_name)
                 info = await asyncio.to_thread(media.resolve, platform_name, media_id)
                 if info is None:
                     raise UserError(captions.EXPIRED)
-                if not media.valid_choice(info, fmt, lang):
+                if not media.valid_choice(info, fmt, lang) or (
+                    inline_id and info.kind == "gallery" and len(info.items) != 1
+                ):
                     raise UserError(captions.UNAVAILABLE)
                 monitor.unit = "files" if info.kind == "gallery" else "bytes"
                 await show()
@@ -355,14 +466,17 @@ async def _run(
                 await show()
                 me = await bot.get_me()
                 caption = captions.result_caption(info, me.username)
+                # Inline cards only take uploaded file_ids: upload to the storage chat first.
+                target = (s.inline_storage_chat or chat_id) if inline_id else chat_id
+                reply = None if inline_id else reply_to
                 try:
                     if result.files:
                         await send_gallery(
                             bot,
-                            chat_id,
-                            [(local_file(p), t) for p, t in result.files],
+                            target,
+                            [(local_file(p), kind) for p, kind in result.files],
                             caption,
-                            reply_to,
+                            reply,
                             journal=journal,
                         )
                     else:
@@ -376,21 +490,37 @@ async def _run(
                             extra |= {"width": result.width, "height": result.height}
                         await send_media(
                             bot,
-                            chat_id,
+                            target,
                             fmt,
                             local_file(result.path),
                             caption,
                             platform_name,
                             media_id,
-                            reply_to=reply_to,
-                            music_button=info.kind == "video",
+                            reply_to=reply,
+                            music_button=info.kind == "video" and not inline_id,
                             journal=journal,
                             **extra,
                         )
+                except (TelegramForbiddenError, TelegramBadRequest) as refused:
+                    # No storage channel: the copy goes to the user's private chat, which needs
+                    # them to have pressed Start. Telegram refused definitely, so nothing was sent.
+                    private = inline_id and not s.inline_storage_chat
+                    if private and (
+                        isinstance(refused, TelegramForbiddenError)
+                        or "chat not found" in refused.message.lower()
+                    ):
+                        raise NeedsStart from refused
+                    raise
                 except CheckpointError:
-                    if len(journal.sent) != journal.total:
+                    if len(journal.sent) != journal.total or inline_id:
+                        # inline: without the checkpoint a replay can't tell the upload happened
                         raise requests.DeliveryUncertain from None
                     log.exception("delivery accepted but checkpoint failed: %s", request_id)
+                if inline_id:
+                    await stop_ticker()  # the card is about to become the media
+                    with contextlib.suppress(Exception):
+                        await journal.mark("stored")
+                    await finish_inline(*journal.sent[0])
 
                 # Caching is an optimization, never turn an accepted upload into failure.
                 try:
@@ -402,8 +532,9 @@ async def _run(
                     await journal.phase("done")
                 outcome = "ok"
                 await stop_ticker()
-                with contextlib.suppress(Exception):
-                    await bot.delete_message(chat_id, msg_id)
+                if not inline_id:  # an inline card *is* the result
+                    with contextlib.suppress(Exception):
+                        await bot.delete_message(chat_id, msg_id)
             except requests.DeliveryUncertain:
                 raise
             except progress.Cancelled:
@@ -412,7 +543,7 @@ async def _run(
                 outcome = "cancel"
                 with contextlib.suppress(Exception):
                     await journal.phase("cancelled")
-                await status(captions.CANCELLED, keyboards.formats_kb(info, s.max_file_bytes))
+                await status(captions.INLINE_CANCELLED if inline_id else captions.CANCELLED, again_kb())
                 return
             except Exception:
                 if journal:
@@ -426,7 +557,11 @@ async def _run(
     except Exception as error:
         outcome = "uncertain" if isinstance(error, requests.DeliveryUncertain) else "fail"
         error_text = f"{type(error).__name__}: {user_message(error)}"
-        await status(user_message(error))
+        retry = inline_id and outcome == "fail"  # never invite a repeat of an uncertain delivery
+        if isinstance(error, NeedsStart):
+            await status(captions.INLINE_PRESS_START, await start_kb())
+        else:
+            await status(user_message(error), again_kb() if retry else None)
         raise
     finally:
         await asyncio.to_thread(stats.clear_live, request_id)

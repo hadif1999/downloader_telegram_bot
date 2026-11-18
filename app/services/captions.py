@@ -176,6 +176,13 @@ TEXTS = {
     "JOIN_UNAVAILABLE": "Membership verification is temporarily unavailable. Please try again.",
     "JOIN_REQUIRED_MANY": "Join all of these channels first, then check your membership.",
     "JOIN_NOT_FOUND_MANY": "Membership not found in every channel yet. Join the remaining channels, then check again.",
+    "INLINE_STARTING": "⏳ <b>Starting the download…</b>\nIf nothing happens in a few seconds, press Start.",
+    "INLINE_CANCELLED": "🚫 <b>Download cancelled</b>\nNothing was sent.",
+    "INLINE_SENT_PM": "📬 <b>Sent to your private chat with the bot</b>\nThis chat didn't accept the file.",
+    "INLINE_PRESS_START": "🔓 <b>Open the bot and press Start</b>\nThis chat didn't accept the file, and I can't message you before you start the bot. The file arrives right after.",
+    "INLINE_STARTED": "This download has already started.",
+    "INLINE_NOT_YOURS": "Only the person who sent this can start it.",
+    "INLINE_MAINTENANCE": "🚧 The bot is under maintenance. Please try again later.",
 }
 
 
@@ -232,7 +239,7 @@ def welcome(platforms, bot_username: str) -> str:
     return "\n".join(lines)
 
 
-def help_guide(platforms) -> str:
+def help_guide(platforms, bot_username: str = "") -> str:
     """/help: what the bot can do and how to use it, without technical detail."""
     from app.config import get_settings
 
@@ -284,6 +291,18 @@ def help_guide(platforms) -> str:
         t(
             "Add me to a group and send links there as usual. Only the person who sent a list can use its buttons."
         ),
+    ]
+    if bot_username:
+        bot = escape(_short(bot_username, 64))
+        lines += [
+            "",
+            t("<b>✍️ In any chat, without adding me</b>"),
+            t("1. In the message box, type @{bot} and a space, then paste the link.", bot=bot),
+            t("2. Pick a quality from the list that appears (⚡ means it is sent instantly)."),
+            t("3. The progress shows in the chat, then turns into the file."),
+            t("If that chat doesn't accept files, I send it to our private chat instead."),
+        ]
+    lines += [
         "",
         t("<b>💡 Good to know</b>"),
         t(
