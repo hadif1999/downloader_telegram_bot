@@ -2,8 +2,13 @@
 __pycache__/
 *.pyc
 .env
+/telegram_api_secrets
 downloads/
 .pytest_cache/
 .ruff_cache/
 graphify-out/
 *.egg-info/
+cookies/*
+!cookies/.gitkeep
+.serena/
+CLAUDE.local.md

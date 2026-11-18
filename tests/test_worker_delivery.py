@@ -1,0 +1,312 @@
+import asyncio
+import time
+from types import SimpleNamespace as NS
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from aiogram.exceptions import TelegramNetworkError
+
+from app.models import DownloadResult, FormatOption, MediaInfo
+from app.services import cache, captions, requests, stats, storage
+from app.worker import tasks
+
+
+@pytest.fixture
+def worker(request_store, monkeypatch, tmp_path):
+    b = MagicMock()
+    b.get_me = AsyncMock(return_value=NS(username="test_bot"))
+    b.session.close = AsyncMock()
+    b.delete_message = AsyncMock()
+    b.send_video = AsyncMock(return_value=NS(photo=[], video=NS(file_id="video-id"), audio=None))
+    i = MediaInfo(
+        "yt", "id", "https://youtu.be/abcdefghijk", "Title", formats=[FormatOption("720", "720p", 10, 720)]
+    )
+    monkeypatch.setattr(tasks, "make_bot", lambda **kwargs: b)
+    monkeypatch.setattr(
+        tasks,
+        "get_settings",
+        lambda: NS(download_dir=tmp_path, max_file_bytes=1000, download_retries=3, download_timeout=90),
+    )
+    monkeypatch.setattr(tasks, "retry_delay", lambda attempt: 0)
+    monkeypatch.setattr(tasks.media, "resolve", lambda *a: i)
+    monkeypatch.setattr(tasks, "make_thumb", lambda *a: None)
+    edit = AsyncMock()
+    monkeypatch.setattr(tasks, "edit_status", edit)
+
+    def download(info, fmt, lang, dest, progress):
+        p = dest / "media.mp4"
+        p.write_bytes(b"video")
+        return DownloadResult(path=str(p))
+
+    download = MagicMock(side_effect=download)
+    monkeypatch.setattr(tasks.registry, "get", lambda *a: NS(download=download))
+    assert requests.create("a", 10)
+    return NS(bot=b, info=i, edit=edit, download=download, directory=tmp_path)
+
+
+def attempt_dirs(root):
+    """Per-attempt download directories; the bounded retention store is expected to remain."""
+    return [p for p in root.iterdir() if p.name != storage.CACHE_DIR]
+
+
+def run(is_caption=False):
+    return asyncio.run(tasks._run(1, 20, is_caption, "yt", "id", "720", None, None, 10, "a"))
+
+
+@pytest.mark.parametrize("is_caption", [False, True])
+def test_status_layout_is_consistent_for_text_and_photo_cards(worker, is_caption):
+    worker.info.uploader = "Creator"
+    run(is_caption)
+    updates = worker.edit.call_args_list
+    assert updates[0].args[3].startswith("⏳ <b>Preparing download</b>")
+    assert updates[-1].args[3].startswith("📤 <b>Uploading to Telegram</b>")
+    assert all("Title" in c.args[3] and "Creator · 720p" in c.args[3] for c in updates)
+    assert all(c.args[4] == is_caption for c in updates)
+
+
+def test_success_caches_result_cleans_files_and_deduplicates_replay(worker):
+    run()
+    run()
+    assert worker.download.call_count == 1
+    worker.bot.send_video.assert_awaited_once()
+    assert cache.get_file_id("yt", "id", "720", None) == "video-id"
+    assert requests.load("a", 10)["phase"] == "done"
+    assert not attempt_dirs(worker.directory)
+
+
+def test_file_cache_failure_does_not_turn_success_into_failure(worker, monkeypatch):
+    monkeypatch.setattr(cache, "save_file_id", MagicMock(side_effect=ConnectionError("cache failed")))
+    run()
+    assert requests.load("a", 10)["phase"] == "done"
+    assert all(captions.FAILED not in c.args[3] for c in worker.edit.call_args_list)
+    worker.bot.delete_message.assert_awaited_once_with(1, 20)
+
+
+def test_checkpoint_failure_after_upload_does_not_report_failure_or_repeat(
+    worker, monkeypatch, request_store
+):
+    original = requests.transition
+
+    def transition(request_id, user, owner, phase, *args):
+        if phase in {"ready", "done"}:
+            raise ConnectionError("Redis unavailable after accepted upload")
+        return original(request_id, user, owner, phase, *args)
+
+    monkeypatch.setattr(requests, "transition", transition)
+    run()
+    assert requests.load("a", 10)["phase"] == "sending"
+    assert all(captions.FAILED not in c.args[3] for c in worker.edit.call_args_list)
+    run()
+    worker.bot.send_video.assert_awaited_once()
+    assert requests.load("a", 10)["phase"] == "uncertain"
+
+
+def test_ambiguous_upload_marks_uncertain_and_raises_not_celery_success(worker):
+    worker.bot.send_video.side_effect = TelegramNetworkError(method=MagicMock(), message="response lost")
+    with pytest.raises(requests.DeliveryUncertain):
+        run()
+    assert requests.load("a", 10)["phase"] == "uncertain"
+    assert worker.edit.call_args.args[3] == captions.status_caption(worker.info, captions.UNCERTAIN, "720")
+    worker.bot.send_video.assert_awaited_once()
+    assert not attempt_dirs(worker.directory)
+
+
+def test_download_failure_marks_failed_and_releases_user(worker, request_store):
+    worker.download.side_effect = RuntimeError("download failed")
+    with pytest.raises(RuntimeError):
+        run()
+    assert requests.load("a", 10)["phase"] == "failed"
+    assert request_store.get(requests.keys("a", 10)[2]) is None
+    assert not attempt_dirs(worker.directory)
+
+
+def test_stale_format_is_rejected_before_downloading(worker):
+    worker.info.formats.clear()
+    with pytest.raises(Exception, match="no longer available"):
+        run()
+    worker.download.assert_not_called()
+
+
+def test_replay_after_final_checkpoint_skips_download(worker):
+    requests.claim("a", 10, "old")
+    requests.transition("a", 10, "old", "ready", [["video", "fid"]], 1)
+    requests.release("a", 10, "old")
+    run()
+    worker.download.assert_not_called()
+    worker.bot.send_video.assert_not_awaited()
+    assert requests.load("a", 10)["phase"] == "done"
+
+
+def test_request_store_failure_before_claim_reports_status_and_closes_session(worker, monkeypatch):
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    from app.services.errors import TEMPORARY
+
+    failure = RedisConnectionError("lease store unavailable")
+    monkeypatch.setattr(requests, "claim", MagicMock(side_effect=failure))
+    with pytest.raises(RedisConnectionError) as caught:
+        run()
+    assert caught.value is failure
+    assert worker.edit.call_args.args[3] == TEMPORARY
+    worker.bot.session.close.assert_awaited_once()
+    worker.download.assert_not_called()
+
+
+@pytest.mark.parametrize("download_fails", [False, True])
+def test_session_cleanup_cannot_change_download_outcome(worker, download_fails):
+    worker.bot.session.close.side_effect = RuntimeError("cleanup failure")
+    if download_fails:
+        failure = RuntimeError("original download failure")
+        worker.download.side_effect = failure
+        with pytest.raises(RuntimeError) as caught:
+            run()
+        assert caught.value is failure
+    else:
+        run()
+        worker.bot.send_video.assert_awaited_once()
+        assert requests.load("a", 10)["phase"] == "done"
+
+
+def test_retained_media_survives_attempt_cleanup(worker):
+    run()
+    retained = storage.usage(worker.directory)
+    assert retained["items"] == 1 and retained["bytes"] >= len(b"video")  # media plus manifest
+
+
+def test_uncertain_upload_retry_reuses_retained_file_without_redownloading(worker, request_store):
+    worker.bot.send_video.side_effect = TelegramNetworkError(method=MagicMock(), message="response lost")
+    with pytest.raises(requests.DeliveryUncertain):
+        run()
+    worker.bot.send_video.side_effect = None
+    # The user explicitly asks again, which creates a fresh request for the same media.
+    assert requests.create("b", 10)
+    asyncio.run(tasks._run(1, 21, False, "yt", "id", "720", None, None, 10, "b"))
+    assert worker.download.call_count == 1
+    assert worker.bot.send_video.await_count == 2
+    sent = worker.bot.send_video.await_args.kwargs.get("video") or worker.bot.send_video.await_args.args[1]
+    assert storage.CACHE_DIR in str(sent)
+
+
+def test_download_refused_when_disk_is_low(worker, monkeypatch):
+    monkeypatch.setattr(storage.shutil, "disk_usage", lambda _: NS(free=0))
+    with pytest.raises(storage.StorageFull):
+        run()
+    worker.download.assert_not_called()
+    assert storage.LOW_STORAGE in worker.edit.call_args.args[3]
+
+
+def test_live_card_offers_cancel_while_downloading_and_drops_it_for_upload(worker):
+    run()
+    updates = worker.edit.call_args_list
+    assert updates[0].args[5].inline_keyboard[0][0].callback_data == "stop|a"
+    assert updates[-1].args[3].startswith("📤 <b>Uploading to Telegram</b>")
+    assert updates[-1].args[5] is None
+
+
+def test_cancel_pressed_during_download_sends_nothing(worker):
+    def download(info, fmt, lang, dest, progress):
+        assert requests.request_cancel("a", 10) == requests.CANCEL_SIGNALLED
+        p = dest / "media.mp4"
+        p.write_bytes(b"video")
+        return DownloadResult(path=str(p))
+
+    worker.download.side_effect = download
+    run()  # a cancelled download is not a task failure
+    worker.bot.send_video.assert_not_awaited()
+    assert requests.load("a", 10)["phase"] == "cancelled"
+    last = worker.edit.call_args
+    assert last.args[3].startswith(captions.CANCELLED) and last.args[5].inline_keyboard  # format menu
+    assert not attempt_dirs(worker.directory)
+
+
+def test_cancel_interrupts_a_running_download(worker, monkeypatch):
+    monkeypatch.setattr(tasks, "PROGRESS_EVERY_SEC", 0.01)
+    reports = []
+
+    def download(info, fmt, lang, dest, progress):
+        requests.request_cancel("a", 10)
+        for done in range(1000):  # a long download; the ticker notices the flag within a tick
+            reports.append(done)
+            progress(done, 1000)
+            time.sleep(0.005)
+        raise AssertionError("download was not interrupted")
+
+    worker.download.side_effect = download
+    run()
+    assert len(reports) < 1000
+    assert requests.load("a", 10)["phase"] == "cancelled"
+    worker.bot.send_video.assert_not_awaited()
+
+
+def test_transient_failure_reruns_download_in_the_same_directory(worker):
+    seen = []
+
+    def download(info, fmt, lang, dest, progress):
+        seen.append(dest)
+        part = dest / "media.mp4.part"
+        if len(seen) == 1:
+            part.write_bytes(b"vid")  # partial data left by the failed attempt
+            raise TimeoutError("read timed out")
+        assert part.read_bytes() == b"vid"  # the re-run can resume it
+        p = dest / "media.mp4"
+        p.write_bytes(b"video")
+        return DownloadResult(path=str(p))
+
+    worker.download.side_effect = download
+    run()
+    assert seen[0] == seen[1]
+    worker.bot.send_video.assert_awaited_once()
+    assert requests.load("a", 10)["phase"] == "done"
+    texts = [c.args[3] for c in worker.edit.call_args_list]
+    assert any("Download interrupted</b>: the server stopped sending data" in t for t in texts)
+    assert any("Restarting, retry <b>1</b> of 3" in t for t in texts)
+
+
+def test_download_gives_up_after_configured_retries(worker):
+    worker.download.side_effect = TimeoutError("read timed out")
+    with pytest.raises(TimeoutError):
+        run()
+    assert worker.download.call_count == 4  # first attempt + DOWNLOAD_RETRIES
+    assert requests.load("a", 10)["phase"] == "failed"
+    assert not attempt_dirs(worker.directory)
+
+
+def test_deterministic_failures_are_not_retried(worker):
+    worker.download.side_effect = tasks.UserError("This video is private.")
+    with pytest.raises(tasks.UserError):
+        run()
+    assert worker.download.call_count == 1
+
+
+def test_outcomes_are_counted_once_for_the_admin_statistics(worker):
+    run()
+    run()  # a replay of a finished request is not a second download
+    today = stats.overview().today
+    assert today["ok"] == 1 and today["bytes"] == len(b"video")
+    assert stats.platforms(1) == {"yt": {"ok": 1}}
+    assert stats.top_users() and stats.top_users()[0][1] == 1
+    assert stats.live_downloads() == []  # the live snapshot is removed when the request ends
+
+
+def test_failures_are_counted_with_a_reason(worker):
+    worker.download.side_effect = RuntimeError("download failed")
+    with pytest.raises(RuntimeError):
+        run()
+    assert stats.overview().today["fail"] == 1
+    (error,) = stats.recent_errors()
+    assert error["p"] == "yt" and error["u"] == 10 and error["e"].startswith("RuntimeError")
+
+
+def test_running_download_publishes_a_live_snapshot(worker):
+    seen = []
+
+    def download(info, fmt, lang, dest, progress):
+        seen.extend(stats.live_downloads())
+        p = dest / "media.mp4"
+        p.write_bytes(b"video")
+        return DownloadResult(path=str(p))
+
+    worker.download.side_effect = download
+    run()
+    (live,) = seen
+    assert live["id"] == "a" and live["user"] == 10 and live["platform"] == "yt" and live["title"] == "Title"

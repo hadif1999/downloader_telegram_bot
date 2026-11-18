@@ -1,0 +1,246 @@
+import asyncio
+from types import SimpleNamespace as NS
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter
+
+from app.services import captions, delivery, requests
+
+
+def message(kind="photo", file_id="fid"):
+    return NS(
+        photo=[NS(file_id=file_id)] if kind == "photo" else [],
+        video=NS(file_id=file_id) if kind == "video" else None,
+        audio=NS(file_id=file_id) if kind == "audio" else None,
+        document=None,
+    )
+
+
+def bot():
+    b = MagicMock()
+    b.send_photo = AsyncMock(return_value=message())
+    b.send_video = AsyncMock(return_value=message("video"))
+    b.send_audio = AsyncMock(return_value=message("audio"))
+
+    async def album(chat_id, group, **kwargs):
+        assert 2 <= len(group) <= 10
+        return [message(item.type, f"fid-{index}") for index, item in enumerate(group)]
+
+    b.send_media_group = AsyncMock(side_effect=album)
+    return b
+
+
+@pytest.mark.parametrize("count", [1, 2, 10, 11, 21, 31, 41, 50])
+def test_gallery_delivers_every_item_with_valid_album_sizes(count):
+    b = bot()
+    result = asyncio.run(delivery.send_gallery(b, 1, [("file", "photo")] * count, "caption"))
+    assert len(result) == count
+    assert b.send_photo.await_count == int(count % 10 == 1)
+
+
+def test_singleton_video_uses_video_method():
+    b = bot()
+    asyncio.run(delivery.send_gallery(b, 1, [("file", "video")], "caption"))
+    b.send_video.assert_awaited_once()
+    b.send_media_group.assert_not_awaited()
+
+
+@pytest.mark.parametrize("count", [1, 2, 11])
+def test_cached_audio_album_is_journaled_and_can_be_replayed(count, request_store):
+    async def run():
+        import json
+
+        requests.create("audio", 10)
+        requests.claim("audio", 10, "owner")
+        journal = await delivery.Journal.load("audio", 10, "owner")
+        b = bot()
+        cached = json.dumps([["audio", f"track-{i}"] for i in range(count)])
+        await delivery.send_cached(b, 1, "all", cached, "caption", "scl", "set", "gallery", None, journal)
+        assert len(journal.sent) == count
+        assert all(kind == "audio" for kind, _ in journal.sent)
+        assert b.send_audio.await_count == int(count % 10 == 1)
+        assert b.send_media_group.await_count == count // 10 + int(count % 10 > 1)
+        b.reset_mock()
+        journal = await delivery.Journal.load("audio", 10, "owner")
+        await delivery.send_cached(b, 1, "all", cached, "caption", "scl", "set", "gallery", None, journal)
+        b.send_audio.assert_not_awaited()
+        b.send_media_group.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_mixed_audio_photo_album_is_rejected():
+    b = bot()
+    with pytest.raises(ValueError, match="cannot be mixed"):
+        asyncio.run(delivery.send_gallery(b, 1, [("a", "audio"), ("b", "photo")], "caption"))
+    b.send_media_group.assert_not_awaited()
+
+
+@pytest.mark.parametrize("kind", ["photo", "audio"])
+def test_partial_gallery_resumes_after_recorded_batch_without_duplicates(request_store, kind):
+    async def run():
+        requests.create("a", 10)
+        requests.claim("a", 10, "owner")
+        prefix = [[kind, f"old-{i}"] for i in range(10)]
+        requests.transition("a", 10, "owner", "ready", prefix, 11)
+        journal = await delivery.Journal.load("a", 10, "owner")
+        b = bot()
+        await delivery.send_gallery(b, 1, [("file", kind)] * 11, "caption", journal=journal)
+        assert len(journal.sent) == 11 and journal.sent[:10] == prefix
+        b.send_media_group.assert_not_awaited()
+        send = b.send_audio if kind == "audio" else b.send_photo
+        send.assert_awaited_once()
+        assert send.call_args.kwargs["caption"] is None
+
+    asyncio.run(run())
+
+
+def test_rate_limit_retries_same_upload_with_bound(monkeypatch):
+    send = AsyncMock(
+        side_effect=[TelegramRetryAfter(method=MagicMock(), message="slow down", retry_after=1), [message()]]
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr(delivery.asyncio, "sleep", sleep)
+    assert asyncio.run(delivery.retry_send(send))
+    assert send.await_count == 2
+    sleep.assert_awaited_once_with(2)
+
+
+def test_exhausted_rate_limit_reports_definite_non_delivery(monkeypatch):
+    send = AsyncMock(side_effect=TelegramRetryAfter(method=MagicMock(), message="slow down", retry_after=1))
+    monkeypatch.setattr(delivery.asyncio, "sleep", AsyncMock())
+    with pytest.raises(delivery.DeliveryNotSent):
+        asyncio.run(delivery.retry_send(send))
+    assert send.await_count == 3
+
+
+def test_ambiguous_timeout_is_not_retried_and_persists_uncertainty(request_store):
+    requests.create("a", 10)
+    requests.claim("a", 10, "owner")
+    send = AsyncMock(side_effect=TelegramNetworkError(method=MagicMock(), message="response timeout"))
+    with pytest.raises(requests.DeliveryUncertain):
+        asyncio.run(delivery.Journal("a", 10, "owner").send(send))
+    assert send.await_count == 1
+    assert requests.load("a", 10)["phase"] == "uncertain"
+
+
+def test_unknown_response_error_is_uncertain_not_safe_to_resend(request_store):
+    requests.create("a", 10)
+    requests.claim("a", 10, "owner")
+    send = AsyncMock(side_effect=RuntimeError("malformed response after upload"))
+    with pytest.raises(requests.DeliveryUncertain):
+        asyncio.run(delivery.Journal("a", 10, "owner").send(send))
+    send.assert_awaited_once()
+    assert requests.load("a", 10)["phase"] == "uncertain"
+
+
+@pytest.mark.parametrize("response", [None, [], [object()], [message(file_id=None)], [message(), message()]])
+def test_malformed_accepted_response_never_marks_failure_or_allows_replay(request_store, response):
+    requests.create("a", 10)
+    requests.claim("a", 10, "owner")
+    journal = delivery.Journal("a", 10, "owner", total=1)
+    send = AsyncMock(return_value=response)
+    with pytest.raises(requests.DeliveryUncertain):
+        asyncio.run(journal.send(send))
+    assert journal.sent == []
+    assert requests.load("a", 10)["phase"] == "uncertain"
+    send.assert_awaited_once()
+
+
+def test_short_album_response_is_uncertain_instead_of_silently_truncating(request_store):
+    requests.create("a", 10)
+    requests.claim("a", 10, "owner")
+    journal = delivery.Journal("a", 10, "owner")
+    b = bot()
+    b.send_media_group.side_effect = None
+    b.send_media_group.return_value = [message()]
+    with pytest.raises(requests.DeliveryUncertain):
+        asyncio.run(delivery.send_gallery(b, 1, [("file", "photo")] * 2, "caption", journal=journal))
+    assert journal.sent == []
+    assert requests.load("a", 10)["phase"] == "uncertain"
+
+
+def test_upload_cancellation_stays_unresolved_and_replay_cannot_resend(request_store):
+    async def scenario():
+        requests.create("a", 10)
+        async with requests.execution("a", 10) as owner:
+            journal = await delivery.Journal.load("a", 10, owner)
+            await journal.prepare(1)
+            with pytest.raises(asyncio.CancelledError):
+                await journal.send(AsyncMock(side_effect=asyncio.CancelledError()))
+        assert requests.load("a", 10)["phase"] == "sending"
+        assert requests.claim("a", 10, "replay") == -1
+        assert requests.load("a", 10)["phase"] == "uncertain"
+
+    asyncio.run(scenario())
+
+
+def test_http_413_is_definite_rejection_not_ambiguous_network_failure(request_store):
+    from aiogram.exceptions import TelegramEntityTooLarge
+
+    from app.services.errors import user_message
+
+    requests.create("a", 10)
+    requests.claim("a", 10, "owner")
+    failure = TelegramEntityTooLarge(method=MagicMock(), message="Request Entity Too Large")
+    send = AsyncMock(side_effect=failure)
+    with pytest.raises(TelegramEntityTooLarge):
+        asyncio.run(delivery.Journal("a", 10, "owner", total=1).send(send))
+    assert requests.load("a", 10)["phase"] == "ready"
+    assert user_message(failure) == captions.TOO_BIG
+    send.assert_awaited_once()
+
+
+def test_checkpoint_failure_cannot_hide_a_definite_rejection(monkeypatch):
+    failure = TelegramBadRequest(method=MagicMock(), message="chat not found")
+    journal = delivery.Journal("a", 10, "owner", total=1)
+    phase = AsyncMock(side_effect=[None, ConnectionError("checkpoint unavailable")])
+    monkeypatch.setattr(journal, "phase", phase)
+    with pytest.raises(TelegramBadRequest) as caught:
+        asyncio.run(journal.send(AsyncMock(side_effect=failure)))
+    assert caught.value is failure
+
+
+def test_rejected_file_id_does_not_commit_a_batch(request_store):
+    requests.create("a", 10)
+    requests.claim("a", 10, "owner")
+    send = AsyncMock(side_effect=TelegramBadRequest(method=MagicMock(), message="wrong file identifier"))
+    journal = delivery.Journal("a", 10, "owner")
+    with pytest.raises(TelegramBadRequest):
+        asyncio.run(journal.send(send))
+    assert journal.sent == [] and requests.load("a", 10)["phase"] == "ready"
+
+
+def test_cloud_api_never_receives_local_file_uri(monkeypatch):
+    from aiogram.types import FSInputFile
+
+    monkeypatch.setattr(delivery, "get_settings", lambda: NS(bot_api_url="", bot_api_local=True))
+    assert isinstance(delivery.local_file("/tmp/file.mp4"), FSInputFile)
+
+
+def test_connect_failure_retries_but_response_timeout_does_not(monkeypatch):
+    from aiohttp import ClientConnectorError
+
+    failure = TelegramNetworkError(method=MagicMock(), message="connection failed")
+    failure.__cause__ = ClientConnectorError(MagicMock(), ConnectionRefusedError())
+    send = AsyncMock(side_effect=[failure, [message()]])
+    monkeypatch.setattr(delivery.asyncio, "sleep", AsyncMock())
+    assert asyncio.run(delivery.retry_send(send))
+    assert send.await_count == 2
+
+
+@pytest.mark.parametrize("for_upload", [False, True])
+@pytest.mark.parametrize("url", ["", "http://telegram-bot-api:8081", "http://127.0.0.1:8081"])
+def test_bot_session_supports_cloud_and_trusted_local_api(monkeypatch, url, for_upload):
+    from app.config import Settings
+    from app.services import telegram
+
+    settings = Settings(_env_file=None, bot_api_url=url, bot_api_local=bool(url))
+    monkeypatch.setattr(telegram, "get_settings", lambda: settings)
+    b = telegram.make_bot(for_upload=for_upload)
+    assert b.id == 123456
+    assert b.session.timeout == (1800 if for_upload else 30)
+    if url:
+        assert b.session.api.base.startswith(url)
+    asyncio.run(b.session.close())

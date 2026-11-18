@@ -1,0 +1,17 @@
+.venv
+.git
+.env
+/telegram_api_secrets
+downloads
+graphify-out
+docs
+tests
+**/__pycache__
+cookies
+.serena
+.pytest_cache
+.ruff_cache
+.tokensave
+deploy
+*.md
+!README.md

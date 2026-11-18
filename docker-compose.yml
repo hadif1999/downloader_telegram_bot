@@ -1,0 +1,60 @@
+# Bounded container logs: Docker's default json-file driver otherwise grows without limit.
+x-logging: &logging
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+x-app: &app
+  <<: *logging
+  build: .
+  image: media-downloader-bot
+  env_file: .env
+  restart: unless-stopped
+  volumes:
+    # mounted at the same path in telegram-bot-api: files are handed over as file:// paths
+    - downloads:/downloads
+    - ./cookies:/cookies:ro
+  depends_on: [redis, telegram-bot-api, bgutil-provider]
+
+services:
+  redis:
+    <<: *logging
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Delivery intent must survive a Redis crash before Telegram is called.
+    command: redis-server --appendonly yes --appendfsync always
+    volumes: [redis-data:/data]
+
+  telegram-bot-api:
+    <<: *logging
+    image: aiogram/telegram-bot-api:latest
+    restart: unless-stopped
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
+      TELEGRAM_LOCAL: "1"
+    volumes:
+      - botapi-data:/var/lib/telegram-bot-api
+      - downloads:/downloads:ro
+
+  bgutil-provider:
+    <<: *logging
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    restart: unless-stopped
+
+  bot:
+    <<: *app
+    command: python -m app.bot.main
+
+  worker:
+    <<: *app
+    # Celery warm shutdown lets running downloads finish/abort cleanly before SIGKILL.
+    stop_grace_period: 60s
+    command: >-
+      sh -c "celery -A app.worker.celery_app worker --loglevel=INFO
+      --concurrency=$${MAX_PARALLEL_DOWNLOADS:-2} --hostname=worker@%h"
+
+volumes:
+  redis-data:
+  botapi-data:
+  downloads:

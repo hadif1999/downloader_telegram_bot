@@ -1,0 +1,20 @@
+# Shared resource budget for every container of the tg_dl Compose project.
+# Install: cp deploy/tg_dl.slice /etc/systemd/system/ && systemctl daemon-reload
+[Unit]
+Description=Telegram media downloader bot (shared resource budget)
+Before=slices.target
+
+[Slice]
+CPUAccounting=yes
+CPUQuota=100%
+MemoryAccounting=yes
+# 1.5 GB budget for the whole stack. Measured on the VPS: ~450 MB idle (incl. page cache),
+# 4 lookups at ~40-60 MB each, 2 parallel downloads peaking at ~540 MB for the worker.
+# Reclaim/throttle first, hard OOM limit second; never push the bot into host swap.
+MemoryHigh=1440M
+MemoryMax=1536M
+MemorySwapMax=0
+TasksMax=1024
+# Lower than the default 100 so other services on the host keep disk priority.
+IOAccounting=yes
+IOWeight=50

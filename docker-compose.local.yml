@@ -1,0 +1,7 @@
+services:
+  redis:
+    ports: ["127.0.0.1:6379:6379"]
+  telegram-bot-api:
+    ports: ["127.0.0.1:8081:8081"]
+  bgutil-provider:
+    ports: ["127.0.0.1:4416:4416"]

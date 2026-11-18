@@ -1,0 +1,31 @@
+[project]
+name = "media-downloader-bot"
+version = "0.1.0"
+description = "Telegram bot that downloads videos, photos and music from YouTube, Instagram, TikTok, SoundCloud and other sites using yt-dlp, gallery-dl, Celery and Redis"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram>=3.13,<4",
+    "aiohttp>=3.9,<4",
+    "celery[redis]>=5.4,<6",
+    "redis>=5.0",
+    "yt-dlp[default]>=2025.11.12",
+    "bgutil-ytdlp-pot-provider>=1.2",
+    "pydantic-settings>=2.4",
+    "gallery-dl>=1.30",
+    "requests>=2.32,<3",
+    "urllib3>=2,<3",
+    "mutagen>=1.47",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]  # formatter handles length; a few long call lines are clearer unsplit
+

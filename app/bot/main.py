@@ -1,0 +1,59 @@
+import asyncio
+import logging
+
+from aiogram import Dispatcher
+
+from app.bot import activity, admin, language
+from app.bot.errors import on_error
+from app.bot.handlers import batch, callbacks, inline, links, start
+from app.bot.membership import MembershipMiddleware
+from app.config import get_settings
+from app.logging_config import redact_logs
+from app.services import health
+from app.services.telegram import make_bot
+
+
+async def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    redact_logs()
+    bot = make_bot()
+    dp = Dispatcher()
+    dp.errors.register(on_error)
+    # admin first: its text-input states must win over link detection (admins only, see IsAdmin)
+    dp.include_routers(
+        admin.router,
+        activity.router,
+        language.router,
+        start.router,
+        inline.router,
+        batch.router,
+        callbacks.router,
+        links.router,
+    )
+    # every kind of update a user sends: messages, buttons, inline queries and chosen results
+    observers = (dp.message, dp.callback_query, dp.inline_query, dp.chosen_inline_result)
+    languages = language.LanguageMiddleware()
+    for observer in observers:
+        observer.outer_middleware(languages)
+    # statistics, bans and maintenance mode, before the channel gate (which costs API calls)
+    usage = activity.ActivityMiddleware()
+    for observer in observers:
+        observer.outer_middleware(usage)
+    health.start_heartbeat("bot")
+    try:
+        membership = await MembershipMiddleware.configure(bot, get_settings())
+        for observer in observers:
+            observer.outer_middleware(membership)
+        await inline.check_storage(bot)
+        await bot.delete_webhook(drop_pending_updates=False, request_timeout=15)
+        await language.publish_commands(bot)
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types(), close_bot_session=False)
+    finally:
+        try:
+            await bot.session.close()
+        except Exception:
+            logging.getLogger(__name__).exception("bot session cleanup failed")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
