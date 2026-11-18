@@ -117,7 +117,8 @@ Telegram ⇄ telegram-bot-api (local server, 2 GB uploads)
 | `app/bot/` | aiogram dispatcher and handlers (`start`, `links`, `callbacks`) |
 | `app/worker/` | Celery app and the `download_media` task (progress, upload, caching) |
 | `app/platforms/` | `Platform` protocol, registry, generic `ytdlp.py`, `gallery.py`, site modules |
-| `app/services/` | captions/texts, keyboards, Redis cache and locks, Telegram helpers |
+| `app/services/` | captions/texts, keyboards, Redis cache and locks, Telegram helpers, statistics (`stats.py`, `health.py`, `ops.py`) |
+| `app/bot/admin/` | hidden `/admin` panel: views, actions, broadcast |
 
 Queue ownership and delivery progress are recorded in Redis (`app/services/requests.py`).
 Queued jobs expire after `QUEUE_TTL` seconds (default: one day). Active jobs renew their owned
@@ -211,6 +212,35 @@ Set `BOT_API_URL=` (empty), `BOT_API_LOCAL=false`, `MAX_FILE_MB=50`. Files are t
 and anything over 50 MB is shown as ❌.
 
 ## Configuration
+
+### Admin panel (`/admin`)
+
+Set `ADMIN_IDS` to your numeric Telegram user ID (several IDs separated by commas; ask
+[@userinfobot](https://t.me/userinfobot)) and restart the bot. `/admin` in a private chat with the bot
+then opens the panel. For everyone else the command doesn't exist: it isn't in the command menu,
+it is treated like any other text, and the panel's buttons do nothing. Admins also skip the
+required-channel check and maintenance mode. `STATS_TIMEZONE` (default `UTC`, e.g. `+03:30`) sets
+where days and hours start in the statistics.
+
+The panel is one message, edited in place, with 🔄 Refresh on every page:
+
+| Page | What it shows / does |
+|------|----------------------|
+| Dashboard | users (total, new today, active in the last 1 h / 24 h / 7 d / 30 d), downloads today by outcome, running and waiting downloads, workers online, maintenance state |
+| 👥 Users | new users today/yesterday, DAU / WAU / MAU and DAU/MAU stickiness, users who blocked the bot, banned users, groups; a 14-day chart of daily active and new users and a 24-hour activity sparkline with the peak hour |
+| 📥 Downloads | today/yesterday by outcome (✅ sent · ♻️ cached resend · ❌ failed · ✖️ cancelled · ❔ uncertain), bytes uploaded, average download time, 7-day success rate, 14-day and 24-hour charts, per-platform table |
+| ⚙️ Queue | running downloads live (platform, format, user, title, %, size, speed, stalls, retries, elapsed), capacity (workers × `MAX_PARALLEL_DOWNLOADS`), the Celery queue by task type and the next tasks; ✖️ cancels a running or queued download after a confirmation (the user's card says it was cancelled) |
+| 🖥 System | every bot/worker process: container RAM vs limit, process RSS, CPU %, load, uptime, disk free and retained media; warns when a heartbeat is missing or no worker is online. Redis memory, keys, ops/s, clients, AOF, hit rate. The effective settings |
+| 🏆 Top users / ⚠️ Errors | most active users (tap to open), the latest 50 failures with reason |
+| 🔎 Find user | by ID or @username: first/last seen, Telegram language, downloads, running download; ⛔ ban / ✅ unban (banned users are ignored silently), ✉️ send them a message |
+| 📣 Broadcast | everyone or users active in 30 d / 7 d / 24 h, minus blocked and banned users; shows a preview and the count before sending, copies the message (no forward header) at 20 msg/s, waits out flood limits, live progress, ⏹ stop |
+| 🚧 Maintenance | users get a notice (default or your own text) instead of the bot; queued downloads still finish |
+| 📄 Export users | CSV of every user (ID, username, name, language, first/last seen, downloads, blocked, banned) |
+
+Statistics start when this version is deployed. They live in Redis under `st:<bot id>:*` and are
+compact: daily/hourly unique users are HyperLogLogs, and each user writes at most once per five
+minutes. Recording them is best effort and can never fail a request. A broadcast runs inside
+the bot process, so restarting the bot stops it.
 
 ### Require users to join channels
 

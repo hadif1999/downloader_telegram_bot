@@ -6,6 +6,7 @@ import json
 import logging
 import shutil
 import subprocess
+import time
 import uuid
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from app.config import get_settings
 from app.platforms import registry
 from app.platforms.common import describe, download_file, retry_delay
 from app.platforms.ytdlp import TooLarge, UserError, retryable
-from app.services import batches, cache, captions, jobs, keyboards, media, progress, requests, storage
+from app.services import batches, cache, captions, jobs, keyboards, media, progress, requests, stats, storage
 from app.services.delivery import CheckpointError, Journal, edit_status, local_file, send_gallery, send_media
 from app.services.errors import user_message
 from app.services.telegram import make_bot
@@ -217,6 +218,9 @@ async def _run(
     info = None
     journal = None
     slot = None
+    # Statistics: what became of this request (None = nothing to count, e.g. a replay).
+    outcome, error_text, delivered = None, "", 0
+    started, wall_started = time.monotonic(), time.time()
 
     monitor = progress.Monitor(timeout=s.download_timeout)
     ticker = None
@@ -236,6 +240,21 @@ async def _run(
                 shown["text"] = (text, markup is None)
                 await status(text, markup)
 
+    def publish_live():
+        """The admin's live queue view: what this download is doing right now."""
+        if info is not None:
+            snapshot = {
+                "platform": platform_name,
+                "fmt": fmt,
+                "lang": lang,
+                "user": user_id,
+                "chat": chat_id,
+                "title": (info.title or "")[:80],
+                "started": wall_started,
+                **monitor.snapshot(),
+            }
+            stats.publish_live(request_id, snapshot)
+
     async def watch():
         every = GROUP_PROGRESS_EVERY_SEC if chat_id < 0 else PROGRESS_EVERY_SEC
         while True:
@@ -243,6 +262,7 @@ async def _run(
             with contextlib.suppress(progress.Cancelled):
                 await check_cancel()  # sets the flag; the download thread raises on its next report
             await show()
+            await asyncio.to_thread(publish_live)
 
     async def stop_ticker():
         if ticker is not None and not ticker.done():
@@ -308,6 +328,7 @@ async def _run(
                     raise UserError(captions.UNAVAILABLE)
                 monitor.unit = "files" if info.kind == "gallery" else "bytes"
                 await show()
+                await asyncio.to_thread(publish_live)
                 ticker = asyncio.create_task(watch())
 
                 dest.mkdir(parents=True, exist_ok=True)
@@ -329,7 +350,8 @@ async def _run(
                 if slot.result is None:
                     result = await asyncio.to_thread(slot.store, result)
                 await check_cancel()  # last chance: nothing is sent after this point
-                monitor.set_stage("upload", size=sum(Path(p).stat().st_size for p in paths))
+                delivered = sum(Path(p).stat().st_size for p in paths)
+                monitor.set_stage("upload", size=delivered)
                 await show()
                 me = await bot.get_me()
                 caption = captions.result_caption(info, me.username)
@@ -378,6 +400,7 @@ async def _run(
                     log.exception("couldn't cache delivered media: %s", request_id)
                 with contextlib.suppress(Exception):
                     await journal.phase("done")
+                outcome = "ok"
                 await stop_ticker()
                 with contextlib.suppress(Exception):
                     await bot.delete_message(chat_id, msg_id)
@@ -386,6 +409,7 @@ async def _run(
             except progress.Cancelled:
                 await stop_ticker()
                 log.info("download cancelled by user: request=%s", request_id)
+                outcome = "cancel"
                 with contextlib.suppress(Exception):
                     await journal.phase("cancelled")
                 await status(captions.CANCELLED, keyboards.formats_kb(info, s.max_file_bytes))
@@ -400,9 +424,22 @@ async def _run(
     except requests.LeaseBusy:
         raise  # the task wrapper retries competing redeliveries without altering their status
     except Exception as error:
+        outcome = "uncertain" if isinstance(error, requests.DeliveryUncertain) else "fail"
+        error_text = f"{type(error).__name__}: {user_message(error)}"
         await status(user_message(error))
         raise
     finally:
+        await asyncio.to_thread(stats.clear_live, request_id)
+        if outcome is not None:
+            await asyncio.to_thread(
+                stats.record_download,
+                platform_name,
+                outcome,
+                user_id,
+                delivered if outcome == "ok" else 0,
+                time.monotonic() - started,
+                error_text,
+            )
         shutil.rmtree(dest, ignore_errors=True)
         if slot is not None:
             # Releases the pin, then enforces the retention limits and sweeps orphans.

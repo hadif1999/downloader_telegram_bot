@@ -38,3 +38,9 @@ def sweep_download_dir(**_):
         logging.getLogger(__name__).info("media retention: %s", storage.usage(s.download_dir))
     except Exception:
         logging.getLogger(__name__).exception("download directory sweep failed")
+    try:
+        from app.services import health
+
+        health.start_heartbeat("worker", disk=s.download_dir)  # for /admin -> System
+    except Exception:
+        logging.getLogger(__name__).exception("couldn't start the health heartbeat")

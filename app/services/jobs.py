@@ -14,7 +14,7 @@ from aiogram.types import Message
 from app import i18n
 from app.config import get_settings
 from app.models import MediaInfo
-from app.services import cache, captions, media, requests
+from app.services import cache, captions, media, requests, stats
 from app.services.delivery import CheckpointError, Journal, invalid_file_id, reply_params, send_cached
 from app.services.errors import user_message
 from app.services.keyboards import cancel_kb, formats_kb
@@ -95,6 +95,7 @@ async def start_download(
                 else:
                     with contextlib.suppress(Exception):
                         await journal.phase("done")
+                    await asyncio.to_thread(stats.record_download, info.platform, "cached", user_id)
                     if card is not None:
                         with contextlib.suppress(Exception):
                             await card.delete()

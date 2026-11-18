@@ -11,6 +11,7 @@ from aiogram.enums import ChatMemberStatus, ChatType
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.types import CallbackQuery, Message
 
+from app.bot.activity import is_admin
 from app.bot.errors import acknowledge_callback
 from app.bot.handlers.start import send_welcome
 from app.config import Settings
@@ -134,7 +135,8 @@ class MembershipMiddleware(BaseMiddleware):
 
     async def __call__(self, handler, event, data):
         callback = isinstance(event, CallbackQuery)
-        if self.language_request(event):
+        sender = getattr(event, "from_user", None)
+        if self.language_request(event) or (sender is not None and is_admin(sender.id)):
             return await handler(event, data)
         check = callback and bool(event.data) and event.data.startswith(CHECK_PREFIX)
         if not self.channels and not check:

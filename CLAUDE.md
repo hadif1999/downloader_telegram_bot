@@ -37,6 +37,9 @@ retries, cancel, disk retention: the invariants the tests protect), `docs/DEPLOY
 | yt-dlp options, progress/retry hooks, `retryable()` | `app/platforms/ytdlp.py`, `downloader.py` |
 | Lazy aiogram pydantic models (memory) | `app/lean_models.py` |
 | UI texts and translations | `app/services/captions.py`, `app/i18n/` |
+| Hidden `/admin` panel (`ADMIN_IDS`): pages, actions, broadcast | `app/bot/admin/` |
+| Activity tracking, bans, maintenance mode (middleware after language) | `app/bot/activity.py` |
+| Statistics in Redis (`st:<bot>:*`), live download snapshots, node heartbeats | `app/services/stats.py`, `health.py`, `ops.py` |
 
 ## Conventions that matter
 

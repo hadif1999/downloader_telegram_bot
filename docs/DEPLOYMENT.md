@@ -93,7 +93,8 @@ docker stats --no-stream $(docker compose -p tg_dl ps -q)
 docker ps --format '{{.Names}} {{.Status}}' | grep -v tg_dl  # the other stacks stay healthy
 ```
 
-Functional check from Telegram: `/start` (Farsi welcome with the `/language` hint), `/language`
+Functional check from Telegram: `/admin` from an `ADMIN_IDS` account (dashboard opens; 🖥 System
+lists the bot and the worker), `/start` (Farsi welcome with the `/language` hint), `/language`
 (🇮🇷/🇬🇧 buttons), a short video link (format card, live progress card, file delivered), and
 `✖️ لغو دانلود` on a large format.
 

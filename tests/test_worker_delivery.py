@@ -7,7 +7,7 @@ import pytest
 from aiogram.exceptions import TelegramNetworkError
 
 from app.models import DownloadResult, FormatOption, MediaInfo
-from app.services import cache, captions, requests, storage
+from app.services import cache, captions, requests, stats, storage
 from app.worker import tasks
 
 
@@ -276,3 +276,37 @@ def test_deterministic_failures_are_not_retried(worker):
     with pytest.raises(tasks.UserError):
         run()
     assert worker.download.call_count == 1
+
+
+def test_outcomes_are_counted_once_for_the_admin_statistics(worker):
+    run()
+    run()  # a replay of a finished request is not a second download
+    today = stats.overview().today
+    assert today["ok"] == 1 and today["bytes"] == len(b"video")
+    assert stats.platforms(1) == {"yt": {"ok": 1}}
+    assert stats.top_users() and stats.top_users()[0][1] == 1
+    assert stats.live_downloads() == []  # the live snapshot is removed when the request ends
+
+
+def test_failures_are_counted_with_a_reason(worker):
+    worker.download.side_effect = RuntimeError("download failed")
+    with pytest.raises(RuntimeError):
+        run()
+    assert stats.overview().today["fail"] == 1
+    (error,) = stats.recent_errors()
+    assert error["p"] == "yt" and error["u"] == 10 and error["e"].startswith("RuntimeError")
+
+
+def test_running_download_publishes_a_live_snapshot(worker):
+    seen = []
+
+    def download(info, fmt, lang, dest, progress):
+        seen.extend(stats.live_downloads())
+        p = dest / "media.mp4"
+        p.write_bytes(b"video")
+        return DownloadResult(path=str(p))
+
+    worker.download.side_effect = download
+    run()
+    (live,) = seen
+    assert live["id"] == "a" and live["user"] == 10 and live["platform"] == "yt" and live["title"] == "Title"

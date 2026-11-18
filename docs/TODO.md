@@ -17,7 +17,8 @@ All platforms from the reference screenshots are implemented (see the table in t
 - [x] Farsi (default) and English interface with `/language` (`app/i18n`)
 - [ ] More interface languages (add a catalog next to `app/i18n/fa.py`)
 - [ ] YouTube is throttled (~0.4 MB/s) from the production VPS: cookies or another route would help
-- [ ] Admin stats / broadcast, per-user rate limits
+- [x] Admin panel: statistics, live queue, system health, bans, broadcast, maintenance (`/admin`)
+- [ ] Per-user rate limits
 - [x] Bounded media retention and clean-up of orphaned files in DOWNLOAD_DIR
 - [x] Optional channel-subscription gate configured through `.env`
 - [ ] Ads slot

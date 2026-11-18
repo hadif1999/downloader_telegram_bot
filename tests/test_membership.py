@@ -398,10 +398,16 @@ def test_same_gate_is_installed_on_messages_and_callbacks(monkeypatch):
     dp.start_polling = AsyncMock()
     monkeypatch.setattr(bot_main, "make_bot", lambda: b)
     monkeypatch.setattr(bot_main, "Dispatcher", lambda: dp)
+    monkeypatch.setattr(bot_main.health, "start_heartbeat", lambda role: None)
     asyncio.run(bot_main.main())
-    # Language first (so join prompts are translated), then the same membership gate on both paths.
+    # Language first (so join prompts are translated), then statistics/bans/maintenance, then the
+    # same membership gate on both paths.
     installed = [c.args[0] for c in dp.message.outer_middleware.call_args_list]
-    assert [type(m).__name__ for m in installed] == ["LanguageMiddleware", "MembershipMiddleware"]
+    assert [type(m).__name__ for m in installed] == [
+        "LanguageMiddleware",
+        "ActivityMiddleware",
+        "MembershipMiddleware",
+    ]
     assert [c.args[0] for c in dp.callback_query.outer_middleware.call_args_list] == installed
 
 

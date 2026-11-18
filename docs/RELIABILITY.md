@@ -199,6 +199,23 @@ are not retried at the request level. Only a server that ignores Range restarts 
 | 19. Unsupported thumbnail URL document | Bounded local upload and cleanup | `test_captions_safety.py` |
 | 20. No safe upload recovery | Bounded definite-failure retries; uncertain outcomes stop | `test_delivery.py`, `test_worker_delivery.py` |
 
+## Statistics and the admin panel
+
+Statistics (`app/services/stats.py`) are observations, never part of a request's state machine:
+every write is best effort, so a Redis error while recording activity, a download outcome, a live
+snapshot or a heartbeat is logged at debug level and the request carries on. Each request is
+counted once, from the worker's final outcome (`ok`, `fail`, `cancel`, `uncertain`) or from the
+bot's successful cached resend (`cached`). Replays of a finished request and lease races are not
+counted. Activity is throttled per user in each process (one write per five minutes, or when the
+hour or the user's name changes), which keeps `appendfsync always` cheap.
+
+Admin cancellation goes through the same `request_cancel` script as the user's button, run with
+the request owner's ID, so the journal still refuses to cancel once an upload may have reached
+Telegram. A queued request cancelled this way gets its card redrawn by the bot; the worker
+then finds it cancelled and does nothing. The ban list and maintenance flag are cached for 15 s
+per bot process (the admin's own process refreshes at once). If Redis fails, the last known
+values stay in force. Bans and maintenance never apply to `ADMIN_IDS`.
+
 ## Error handling and recovery
 
 Bot updates have a final error observer in addition to contextual link/callback handling. Expected

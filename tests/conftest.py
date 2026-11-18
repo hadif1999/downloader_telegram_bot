@@ -119,9 +119,10 @@ def redis_server():
 
 @pytest.fixture
 def request_store(redis_server, monkeypatch):
-    from app.services import cache, requests
+    from app.services import cache, ops, requests, stats
 
     redis_server.flushdb()  # only the ephemeral, network-isolated instance above
-    monkeypatch.setattr(cache, "client", lambda: redis_server)
-    monkeypatch.setattr(requests, "client", lambda: redis_server)
+    for module in (cache, requests, stats, ops):
+        monkeypatch.setattr(module, "client", lambda: redis_server)
+    stats.forget_throttle()
     return redis_server

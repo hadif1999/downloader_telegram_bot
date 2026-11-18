@@ -168,6 +168,23 @@ class Monitor:
             return None
         return (d1 - d0) / (t1 - t0)
 
+    def snapshot(self) -> dict:
+        """Machine-readable state for the admin's live queue view."""
+        with self._lock:
+            now = self._now()
+            return {
+                "stage": self.stage,
+                "unit": self.unit,
+                "done": self.done,
+                "total": self.total,
+                "size": self.size,
+                "speed": self._speed(),
+                "connections": self.detail.get("connections"),
+                "retries": self.retries_used,
+                "stalled": round(now - self.last_data) if self.stage == "download" else 0,
+                "elapsed": round(now - self.started),
+            }
+
     def render(self) -> str:
         with self._lock:
             now = self._now()

@@ -24,6 +24,31 @@ class Settings(BaseSettings):
     # Optional comma-separated join links, matched to the channel IDs by position; leave a
     # position empty for a public channel (its t.me/username link is derived).
     force_join_channel_url: Annotated[list[str], NoDecode] = []
+    # Comma-separated numeric Telegram user IDs allowed to open the hidden /admin panel.
+    admin_ids: Annotated[list[int], NoDecode] = []
+    # Day/hour boundaries of the admin statistics: an IANA zone (e.g. Asia/Tehran, needs the
+    # system tz database) or a fixed offset such as +03:30. Defaults to UTC.
+    stats_timezone: str = "UTC"
+
+    @field_validator("admin_ids", mode="before")
+    @classmethod
+    def admin_user_ids(cls, value):
+        ids = []
+        for item in _items(value):
+            text = str(item).strip()
+            if not re.fullmatch(r"[1-9]\d{0,15}", text):
+                raise ValueError("ADMIN_IDS entries must be numeric Telegram user IDs, separated by commas")
+            if int(text) not in ids:
+                ids.append(int(text))
+        return ids
+
+    @field_validator("stats_timezone")
+    @classmethod
+    def valid_timezone(cls, value):
+        from app.services.clock import parse_timezone
+
+        parse_timezone(value)  # raises ValueError for an unknown zone
+        return value
 
     @field_validator("force_join_channel_id", mode="before")
     @classmethod
